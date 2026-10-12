@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import {spawnSync} from 'node:child_process';
+import {webcrypto} from 'node:crypto';
 import {fileURLToPath} from 'node:url';
 import vm from 'node:vm';
 
@@ -12,8 +13,8 @@ test('HTML 4.0 markup has valid controls and labels and no CSS or HTML5 attribut
   assert.equal(result.status,0,result.stderr);
   assert.doesNotMatch(html, /<form\b/); // Password fields cannot fall back to native HTTP submission.
 });
-test('HTML 4.0 native buttons still connect, search and share the same credential with the CLI', async () => {
-  const elements = new Map(), calls = [], KEY = 'moltbook_html4_fixture_not_a_real_key';
+test('native controls connect, download and restore an external ZIP, and share the connection with the CLI', async () => {
+  const elements = new Map(), calls = [], downloads = [], links = [], revoked = [], KEY = 'moltbook_html4_fixture_not_a_real_key';
   class Element {
     constructor(tag,id = '') { this.tagName=tag.toUpperCase(); this.id=id; this.value=''; this.disabled=false; this.textContent=''; this.events={}; this.children=[]; }
     addEventListener(type,handler) { this.events[type]=handler; }
@@ -21,16 +22,23 @@ test('HTML 4.0 native buttons still connect, search and share the same credentia
     replaceChildren(...children) { this.children=children; }
     scrollIntoView() {}
     focus() {}
+    click() { links.push({href:this.href,name:this.download}); }
+    remove() {}
   }
   for (const match of html.matchAll(/<([a-z][a-z0-9]*)\b[^>]*\bid="([^"]+)"[^>]*>/g)) elements.set(match[2],new Element(match[1],match[2]));
   const document = {
+    body:new Element('body'),
     getElementById:id => { assert.ok(elements.has(id),'Missing control: ' + id); return elements.get(id); },
     querySelectorAll:selector => { assert.equal(selector,'button'); return [...elements.values()].filter(e => e.tagName==='BUTTON'); },
-    createElement:tag => { assert.ok(['button','p','h3','div','pre','br'].includes(tag)); return new Element(tag); },
+    createElement:tag => { assert.ok(['button','p','h3','div','pre','br','a'].includes(tag)); return new Element(tag); },
     createTextNode:text => ({textContent:text})
   };
   const window = {addEventListener() {}};
-  const context = {document,window,URL,URLSearchParams,AbortController,TextDecoder,TextEncoder,Uint8Array,btoa,atob,setTimeout,clearTimeout};
+  class BrowserURL extends URL {
+    static createObjectURL(blob) { downloads.push(blob); return 'blob:https://c933103.github.io/synthetic-' + downloads.length; }
+    static revokeObjectURL(url) { revoked.push(url); }
+  }
+  const context = {document,window,URL:BrowserURL,URLSearchParams,AbortController,TextDecoder,TextEncoder,Uint8Array,Blob,crypto:webcrypto,btoa,atob,setTimeout,clearTimeout};
   context.fetch = async (url,options) => {
     calls.push({url,options});
     return new Response(JSON.stringify(url.includes('/search?') ? {success:true,results:[]} : {success:true,agent:{name:'Fixture'}}),{headers:{'content-type':'application/json'}});
@@ -62,4 +70,37 @@ test('HTML 4.0 native buttons still connect, search and share the same credentia
   assert.equal(elements.get('delete-post-id').value,''); assert.equal(elements.get('delete-confirm-id').value,'');
   await elements.get('delete-button').events.click();
   assert.equal(calls.length,4); assert.equal((await window.moltbookDesk.execute('connection')).data.connected,true);
+  assert.equal(elements.get('recovery-download').disabled,false);
+  await elements.get('recovery-download').events.click();
+  assert.equal(downloads.length,1); assert.equal(downloads[0].type,'application/zip');
+  assert.deepEqual(links,[{href:'blob:https://c933103.github.io/synthetic-1',name:'moltbook-recovery.zip'}]);
+  assert.equal(calls.length,4,'Export must not send a network request');
+  assert.equal(elements.get('status').textContent.includes(KEY),false);
+  const cliExport = await window.moltbookDesk.execute('recoveryArchive');
+  assert.equal(cliExport.ok,false); assert.match(cliExport.error,/not supported/); assert.equal(calls.length,4);
+  await elements.get('disconnect').events.click();
+  assert.equal((await window.moltbookDesk.execute('connection')).data.connected,false);
+  assert.equal(elements.get('recovery-download').disabled,true);
+  assert.deepEqual(revoked,['blob:https://c933103.github.io/synthetic-1']);
+  // This context has no IndexedDB or saved browser credentials. Only the file remains.
+  elements.get('recovery-file').files=[downloads[0]];
+  await elements.get('recovery-import').events.click();
+  assert.equal(calls.length,5); assert.equal(calls[4].options.headers.Authorization,'Bearer ' + KEY);
+  assert.equal((await window.moltbookDesk.execute('connection')).data.connected,true);
+  assert.equal(elements.get('recovery-file').value,'');
+  const bad = new Uint8Array(await downloads[0].arrayBuffer()); bad[30] ^= 255;
+  elements.get('recovery-file').files=[new Blob([bad],{type:'application/zip'})];
+  await elements.get('recovery-import').events.click();
+  assert.equal(calls.length,5); assert.match(elements.get('status').textContent,/not a valid recovery ZIP/);
+  let oversizedRead = false;
+  elements.get('recovery-file').files=[{size:10000,arrayBuffer() { oversizedRead=true; }}];
+  await elements.get('recovery-import').events.click();
+  assert.equal(oversizedRead,false); assert.equal(calls.length,5);
+  let finishRead;
+  elements.get('recovery-file').files=[{size:downloads[0].size,arrayBuffer() { return new Promise(resolve => { finishRead=resolve; }); }}];
+  const importing = elements.get('recovery-import').events.click();
+  await elements.get('disconnect').events.click();
+  finishRead(await downloads[0].arrayBuffer()); await importing;
+  assert.equal(calls.length,5,'An import cancelled by Disconnect cannot authenticate');
+  assert.equal((await window.moltbookDesk.execute('connection')).data.connected,false);
 });

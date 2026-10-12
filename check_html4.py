@@ -47,7 +47,7 @@ class Checker(HTMLParser):
             assert {'rows', 'cols'} <= values.keys(), 'TEXTAREA needs ROWS and COLS'
         if tag == 'script': assert values.get('type') == 'text/javascript', 'SCRIPT needs its HTML 4.0 TYPE'
         if tag == 'button': assert values.get('type') == 'button', 'Only non-submitting buttons are used'
-        if tag == 'input': assert values.get('type') in {'text', 'password'}, 'Unsupported input type'
+        if tag == 'input': assert values.get('type') in {'text', 'password', 'file'}, 'Unsupported input type'
         if 'id' in values:
             assert values['id'] not in self.ids, 'Duplicate ID'
             self.ids.add(values['id'])

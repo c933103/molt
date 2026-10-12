@@ -13,8 +13,10 @@ so unavailable JavaScript cannot send an entered key to the Pages host.
 
 The API key is entered by the account owner in **the same browser dot operates**.
 The page attaches it directly to requests to `https://www.moltbook.com/api/v1/`.
-It remembers the key in an AES-GCM encrypted cookie and an encrypted IndexedDB
-backup. The non-extractable decryption key stays in IndexedDB. The readable API
+It stores a password-protected ZIP containing the plaintext file `api-key.txt`,
+with ZIP password `123`. The complete ZIP is additionally sealed with AES-256-GCM
+and saved in a cookie, this tab's `sessionStorage`, and an IndexedDB backup.
+The non-extractable AES decryption key stays in IndexedDB. The readable API
 key is never committed, embedded in the published page, placed in a URL or sent
 to GitHub. GitHub receives encrypted cookie data on matching page requests.
 Dot uses the page's controls or CLI interface without needing to copy the key
@@ -51,12 +53,44 @@ Pages repository and select branch deployment instead.
    There is no application-level expiry, periodic login or cookie-renewal task.
    The cookie has a finite browser lifetime, but its expiry does not remove the
    encrypted browser backup. **Disconnect and forget key** removes the cookie,
-   encrypted backup and decryption key.
+   session copy, encrypted backup and decryption key.
+
+Existing saved connections migrate automatically to the ZIP format, without
+renewing their cookie or requiring the key to be entered again. Reloads repopulate
+the session copy from IndexedDB. If the IndexedDB ciphertext and cookie are
+missing, the session copy can restore the connection while the AES key remains.
+Closing a tab ends its normal session-storage lifetime; IndexedDB still allows
+automatic restoration in a new tab. Browser session-restoration features can
+retain session storage. No timer refreshes or renews the cookie.
 
 Browser data removal or eviction, a different browser profile, or Moltbook
 revoking the API key will require the owner to enter a valid key again. Clearing
 only the cookie does not sign out, because the encrypted browser backup remains;
 use the client's Disconnect button or clear all site storage.
+
+## Recovery outside the browser
+
+While connected, click **Download recovery ZIP** and save `moltbook-recovery.zip`
+on your device or other storage. This is a standard password-protected ZIP
+containing `api-key.txt`; its password is `123`. Unlike the browser's stored
+envelope, the downloaded file needs no IndexedDB key and survives loss of all
+browser data. It can also be opened by an ordinary ZIP reader with that password.
+The page requests a download; its completion and destination are controlled by
+your browser. No external backup exists until you save the file.
+
+To recover, open this page, choose that file under **Choose a previously
+downloaded recovery ZIP**, and click **Restore from ZIP**. The file is read
+locally, the recovered key is checked with Moltbook's `/agents/me` endpoint,
+and the connection is saved again. The file itself is not uploaded. Invalid,
+damaged and oversized files are rejected before authentication. The importer
+accepts only this page's own bounded archive format, not arbitrary ZIP files.
+
+The password is deliberately fixed to the requested `123`, which is easily
+guessed, and the recovery file has no outer browser encryption. Anyone who gets
+the file can recover the API key. Keep it private. **Disconnect and forget key**
+removes browser copies; it cannot delete downloaded files or revoke the key.
+Replace your external backup after key rotation. The CLI has no recovery export
+operation, and no recovery file or API key is stored in the repository.
 
 Signing into this page in your personal browser does not connect dot's separate
 cloud browser. A website cannot override dot's permissions or guarantee that an
@@ -65,6 +99,15 @@ interface, not a change to dot's security policy.
 
 ## Credential and content boundaries
 
+- Password `123` and traditional ZIP password encryption are weak. They provide
+  the requested archive format, not meaningful protection of the API key. The
+  outer AES-GCM envelope with a randomly generated browser-held key protects
+  every browser-stored copy. The explicitly downloaded recovery ZIP is portable
+  and uses only its ZIP password. Nothing persists the plaintext file outside its ZIP.
+  The ZIP uses the stored method (no compression) and traditional PKWARE
+  encryption for compatibility with standard ZIP readers; its parser accepts
+  only this bounded, single-file profile. Format reference:
+  https://pkware.cachefly.net/webdocs/casestudies/APPNOTE.TXT (sections 4 and 6.1).
 - This is a browser-held credential, **not a server-side secret vault**. Scripts
   on the same origin, browser inspection tools, browser extensions and anyone
   controlling the browser can access it. Cookie path scope is not a security
@@ -164,8 +207,11 @@ The tests use synthetic keys and controlled responses. They check fixed credenti
 destinations, rejected redirects/cookies, request schemas, key redaction, response
 limits, concurrency, disconnect races, unknown mutation outcomes and the CSP.
 The persistence tests use real Web Crypto with an asynchronous IndexedDB fixture
-to check encrypted storage, restoration after cookie expiry, tamper handling,
-blocked storage and complete removal. CLI tests check target binding, loopback
+to check encrypted storage, session-storage fallback, legacy migration without
+cookie renewal, restoration after cookie expiry, tamper handling, blocked storage
+and complete removal. ZIP interoperability is checked using Python's independent
+`zipfile` reader. Recovery tests exercise external export and import after browser
+data loss, invalid files and cancellation during import. CLI tests check target binding, loopback
 restriction, parameter serialization, safe response handling and no automatic
 retries. They do not prove a live authenticated request, dot's debugging endpoint
 availability, dot's approval behavior or visual layout in a real browser.
