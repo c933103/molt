@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <meta name="referrer" content="no-referrer">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-ng0FUeYlTzbEWLKyftBxtp0XGqNXcQEJ7zkzW45KXAY='; style-src 'sha256-chBGrccFyk6jjR1i9k2bfyqfCNW5oJmMlROl8ikb9Js='; connect-src https://www.moltbook.com; base-uri 'none'; form-action 'none'; object-src 'none'">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-o+udki9J1GM/X4QCaapDSN02/5G7QxZfZNvtBD6DE44='; style-src 'sha256-chBGrccFyk6jjR1i9k2bfyqfCNW5oJmMlROl8ikb9Js='; connect-src https://www.moltbook.com; base-uri 'none'; form-action 'none'; object-src 'none'">
   <title>Moltbook browser desk</title>
   <style>
     :root{color-scheme:light;--ink:#182832;--muted:#526775;--border:#d6e0e5;--red:#a93534;--paper:#fff;--bg:#f1f5f6}
@@ -38,11 +38,13 @@
       <div class="actions"><button class="primary" type="submit">Connect</button></div>
     </form>
     <button id="disconnect" hidden type="button">Disconnect and forget key</button>
-    <p class="muted">Keep this tab open. Refreshing or closing it clears the key. No key is saved to the site or browser storage.</p>
+    <p class="muted">This browser remembers the key using an encrypted cookie and an encrypted browser copy. It reconnects automatically, including after cookie expiry. No scheduled renewal is needed. Disconnect removes the saved credential.</p>
     <details><summary>Using this with dot</summary><ol>
       <li>Ask dot to open this page in its browser.</li><li>Take over that browser and enter the key here.</li><li>Select Connect, then return control to dot.</li><li>Ask dot to use the page’s buttons and forms. It does not need to copy the key.</li>
     </ol><p class="muted">Your personal browser and dot’s cloud browser have separate sessions. A website cannot override dot’s action permissions.</p></details>
-    <details><summary>Credential limits</summary><p class="muted">This is a browser-held credential, not a server-side vault. Code running in this page, browser extensions, browser inspection tools and someone controlling this browser can access it. Only use a copy whose source you trust.</p></details>
+    <details><summary>CLI access</summary><p class="muted"><a href="cli.mjs" download="moltbook-cli.mjs">Download the CLI</a> and run it with Node.js 22.4 or newer. It uses this page’s saved connection through a local Chrome/Chromium debugging endpoint. No API key is passed to the CLI.</p><pre>node cli.mjs connection
+node cli.mjs posts --sort new</pre><p class="muted">The browser must expose that endpoint to the machine running the CLI. A plain HTTP fetch of this static page cannot run an authenticated operation.</p></details>
+    <details><summary>Credential limits</summary><p class="muted">GitHub receives encrypted cookie data, not the readable API key. The encrypted backup and its decryption key stay in this browser’s IndexedDB. Code running on this origin, browser extensions, browser inspection tools and someone controlling this browser can still access the credential. Only use a copy whose source you trust.</p></details>
     <p class="muted"><a href="https://www.moltbook.com" target="_blank" rel="noopener noreferrer">Moltbook</a> · Unofficial client</p>
   </aside>
   <section aria-label="Moltbook workspace">
@@ -83,6 +85,126 @@ const RESPONSE_LIMIT = 2 * 1024 * 1024;
 const MUTATIONS = new Set(['createPost', 'comment', 'upvote', 'downvote', 'verify']);
 class ClientError extends Error {
   constructor(message, unknownOutcome = false) { super(message); this.name = 'ClientError'; this.unknownOutcome = unknownOutcome; }
+}
+const KEY_PATTERN = /^[A-Za-z0-9_-]{16,512}$/;
+const COOKIE_AGE = 400 * 24 * 60 * 60;
+class CredentialVault {
+  #doc; #idb; #crypto; #scope; #path; #generation = 0; #queue = Promise.resolve();
+  constructor({document:doc = document, indexedDB:idb = indexedDB, crypto:crypt = crypto, location:loc = location} = {}) {
+    this.#doc = doc; this.#idb = idb; this.#crypto = crypt;
+    const url = new URL(loc.href); this.#path = new URL('.', url).pathname;
+    if (url.protocol !== 'https:' || !/^\/[A-Za-z0-9/_%.-]*$/.test(this.#path)) throw new ClientError('Remembering the key requires an HTTPS page.');
+    this.#scope = url.origin + this.#path;
+  }
+  #schedule(work) {
+    const pending = this.#queue.then(work); this.#queue = pending.catch(() => {}); return pending;
+  }
+  #cookie() {
+    const matches = this.#doc.cookie.split(';').map(c => c.trim()).filter(c => c.startsWith('__Secure-moltbook-desk-v1='));
+    if (matches.length > 1) throw new ClientError('Conflicting saved credentials. Disconnect and connect again.');
+    return matches.length ? matches[0].slice('__Secure-moltbook-desk-v1='.length) : '';
+  }
+  #expire() { this.#doc.cookie = '__Secure-moltbook-desk-v1=; Path=' + this.#path + '; Max-Age=0; Secure; SameSite=Strict'; }
+  #open() {
+    if (!this.#idb || !this.#crypto?.subtle) return Promise.reject(new ClientError('This browser cannot save the credential securely.'));
+    return new Promise((resolve, reject) => {
+      let settled = false;
+      const timer = setTimeout(() => { settled = true; reject(new ClientError('Browser credential storage is unavailable.')); }, 5000);
+      let req;
+      try { req = this.#idb.open('moltbook-browser-desk-v1', 1); } catch { clearTimeout(timer); reject(new ClientError('Browser credential storage is unavailable.')); return; }
+      req.onupgradeneeded = () => { if (!req.result.objectStoreNames.contains('keys')) req.result.createObjectStore('keys'); };
+      req.onsuccess = () => {
+        clearTimeout(timer); if (settled) { req.result.close(); return; } settled = true;
+        req.result.onversionchange = () => req.result.close(); resolve(req.result);
+      };
+      req.onerror = req.onblocked = () => { clearTimeout(timer); settled = true; reject(new ClientError('Browser credential storage is unavailable.')); };
+    });
+  }
+  async #stored(mode, createKey = null, remove = false, record = null) {
+    const db = await this.#open();
+    try {
+      return await new Promise((resolve, reject) => {
+        let result = {key:null, token:''}, tx;
+        try { tx = db.transaction('keys', mode); } catch { reject(new ClientError('Browser credential storage is unavailable.')); return; }
+        tx.oncomplete = () => resolve(result);
+        tx.onerror = tx.onabort = () => reject(new ClientError('Browser credential storage could not be updated.'));
+        const store = tx.objectStore('keys');
+        if (remove) { store.delete(this.#scope); store.delete(this.#scope + '|ciphertext'); return; }
+        if (record) {
+          // Commit the wrapping key and ciphertext together; the browser backup is authoritative.
+          store.put(record.key, this.#scope); store.put(record.token, this.#scope + '|ciphertext'); result = record; return;
+        }
+        const req = store.get(this.#scope);
+        req.onsuccess = () => {
+          result.key = req.result || null;
+          if (!result.key && createKey) { result.key = createKey; store.put(createKey, this.#scope); }
+        };
+        const tokenReq = store.get(this.#scope + '|ciphertext');
+        tokenReq.onsuccess = () => { result.token = typeof tokenReq.result === 'string' ? tokenReq.result : ''; };
+      });
+    } finally { db.close(); }
+  }
+  #validKey(key) { return key && key.extractable === false && key.algorithm?.name === 'AES-GCM' && key.algorithm?.length === 256 && key.usages.includes('encrypt') && key.usages.includes('decrypt'); }
+  #aad() { return new TextEncoder().encode('Moltbook browser desk v1|' + this.#scope); }
+  save(value) {
+    const generation = this.#generation;
+    return this.#schedule(async () => {
+      if (!KEY_PATTERN.test(value)) throw new ClientError('Invalid credential.');
+      if (generation !== this.#generation) return false;
+      if (!this.#crypto?.subtle) throw new ClientError('This browser cannot save the credential securely.');
+      const candidate = await this.#crypto.subtle.generateKey({name:'AES-GCM', length:256}, false, ['encrypt','decrypt']);
+      if (generation !== this.#generation) return false;
+      // The read/create occurs in one transaction so simultaneous tabs reuse a single key.
+      const {key} = await this.#stored('readwrite', candidate);
+      if (!this.#validKey(key)) throw new ClientError('The saved encryption key is invalid. Disconnect and connect again.');
+      const iv = this.#crypto.getRandomValues(new Uint8Array(12));
+      const plain = new TextEncoder().encode(JSON.stringify({key:value}));
+      let encrypted;
+      try { encrypted = new Uint8Array(await this.#crypto.subtle.encrypt({name:'AES-GCM', iv, additionalData:this.#aad(), tagLength:128}, key, plain)); }
+      finally { plain.fill(0); }
+      if (generation !== this.#generation) return false;
+      const bytes = new Uint8Array(iv.length + encrypted.length); bytes.set(iv); bytes.set(encrypted, iv.length);
+      const token = 'v1.' + btoa(String.fromCharCode(...bytes)).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
+      await this.#stored('readwrite', null, false, {key, token});
+      if (generation !== this.#generation) return false;
+      // Cookies may expire or be blocked. Neither event loses the encrypted browser backup.
+      try { this.#doc.cookie = '__Secure-moltbook-desk-v1=' + token + '; Path=' + this.#path + '; Max-Age=' + COOKIE_AGE + '; Secure; SameSite=Strict'; } catch { /* The encrypted backup remains available. */ }
+      return true;
+    });
+  }
+  restore() {
+    const generation = this.#generation;
+    return this.#schedule(async () => {
+      try {
+        const {key, token:backup} = await this.#stored('readonly');
+        if (generation !== this.#generation) return null;
+        const token = backup || this.#cookie(); if (!token) return null;
+        if (!/^v1\.[A-Za-z0-9_-]{40,1600}$/.test(token)) throw new Error('Invalid envelope');
+        const encoded = token.slice(3).replace(/-/g,'+').replace(/_/g,'/');
+        const bytes = Uint8Array.from(atob(encoded), c => c.charCodeAt(0));
+        if (!this.#validKey(key)) throw new Error('Missing encryption key');
+        const plain = new Uint8Array(await this.#crypto.subtle.decrypt({name:'AES-GCM', iv:bytes.slice(0,12), additionalData:this.#aad(), tagLength:128}, key, bytes.slice(12)));
+        let data;
+        try { data = JSON.parse(new TextDecoder().decode(plain)); } finally { plain.fill(0); }
+        if (generation !== this.#generation) return null;
+        if (typeof data.key !== 'string' || !KEY_PATTERN.test(data.key)) throw new Error('Invalid credential');
+        return data.key;
+      } catch {
+        if (generation !== this.#generation) return null;
+        // Keep the encrypted cookie on transient storage failures so a later attempt can recover it.
+        throw new ClientError('The saved credential could not be restored. Connect again or disconnect to remove it.');
+      }
+    });
+  }
+  forget() {
+    this.#generation++;
+    let cleared = true;
+    try { this.#expire(); cleared = !this.#cookie(); } catch { cleared = false; }
+    return this.#schedule(async () => {
+      await this.#stored('readwrite', null, true);
+      if (!cleared) throw new ClientError('The browser did not remove the saved cookie. Clear this site’s cookies and storage.');
+    });
+  }
 }
 function checkedText(value, name, max, required = true) {
   if (typeof value !== 'string' || value.length > max || (required && !value.trim())) throw new ClientError('Invalid ' + name + '.');
@@ -142,7 +264,7 @@ function operation(action, p = {}) {
 class MoltbookSession {
   #key = ''; #busy = false; #controller = null; #epoch = 0;
   connect(value) {
-    if (typeof value !== 'string' || !/^[A-Za-z0-9_-]{16,512}$/.test(value)) throw new ClientError('Enter the API key itself, without a Bearer prefix.');
+    if (typeof value !== 'string' || !KEY_PATTERN.test(value)) throw new ClientError('Enter the API key itself, without a Bearer prefix.');
     if (this.#busy) throw new ClientError('Wait for the current request before connecting.');
     this.#key = value; this.#epoch++;
   }
@@ -212,7 +334,8 @@ class MoltbookSession {
 }
 // END CLIENT
 const $ = id => document.getElementById(id);
-const session = new MoltbookSession(); let next = null;
+const session = new MoltbookSession(); let next = null, vault = null, connectionBusy = false, connectionGeneration = 0, connectionReady = Promise.resolve();
+try { vault = new CredentialVault(); } catch { /* HTTPS and storage support are reported when connecting. */ }
 function value(id) { return $(id).value; }
 function notice(message, kind = '') { $('status').textContent = message; $('status').dataset.kind = kind; }
 function view(name) {
@@ -220,9 +343,10 @@ function view(name) {
   document.querySelectorAll('[data-view]').forEach(el => el.setAttribute('aria-pressed', String(el.dataset.view === name)));
 }
 function sync() {
-  $('connection').textContent = session.connected ? 'Connected · key in memory' : 'Not connected';
-  $('connect-form').hidden = session.connected; $('disconnect').hidden = !session.connected;
-  document.querySelectorAll('button').forEach(b => { b.disabled = session.busy && b.id !== 'disconnect'; });
+  $('connection').textContent = session.connected ? 'Connected in this browser' : 'Not connected';
+  $('connect-form').hidden = session.connected; $('disconnect').hidden = !session.connected && !vault;
+  $('disconnect').textContent = session.connected ? 'Disconnect and forget key' : 'Forget saved key';
+  document.querySelectorAll('button').forEach(b => { b.disabled = (connectionBusy || session.busy) && b.id !== 'disconnect'; });
 }
 function node(tag, text, className = '') { const el = document.createElement(tag); el.textContent = text; if (className) el.className = className; return el; }
 function button(label, handler) { const b = node('button', label); b.type = 'button'; b.addEventListener('click', handler); return b; }
@@ -281,12 +405,32 @@ async function run(action, params = {}, show = true) {
 function form(id, handler) { $(id).addEventListener('submit', ev => { ev.preventDefault(); handler(); }); }
 document.querySelectorAll('[data-view]').forEach(b => b.addEventListener('click', () => view(b.dataset.view)));
 form('connect-form', async () => {
+  if (connectionBusy || session.busy) return;
+  const generation = ++connectionGeneration;
   const input = $('api-key'); const key = input.value.trim(); input.value = '';
   try { session.connect(key); } catch (err) { notice(err.message, 'error'); return; }
-  sync(); const data = await run('me');
-  if (!data) { session.disconnect(); sync(); }
+  connectionBusy = true; sync();
+  try {
+    const data = await run('me');
+    if (generation !== connectionGeneration) return;
+    if (!data) { session.disconnect(); return; }
+    try {
+      if (!vault) throw new ClientError('This browser cannot save the credential securely.');
+      const saved = await vault.save(key);
+      if (generation === connectionGeneration && saved) notice('Connected. This browser will reconnect automatically; no scheduled renewal is needed.', 'success');
+    } catch (err) {
+      if (generation === connectionGeneration) notice('Connected for this tab only. ' + (err instanceof ClientError ? err.message : 'The encrypted credential could not be saved.'), 'error');
+    }
+  } finally { if (generation === connectionGeneration) { connectionBusy = false; sync(); } }
 });
-$('disconnect').addEventListener('click', () => { session.disconnect(); $('api-key').value = ''; next = null; $('next-page').hidden = true; $('results').replaceChildren(node('p', 'Disconnected.')); $('raw-response').textContent = 'None'; $('verification-code').value = ''; $('challenge').hidden = true; notice('Disconnected. The key has been forgotten.'); sync(); });
+$('disconnect').addEventListener('click', async () => {
+  const generation = ++connectionGeneration; session.disconnect(); connectionBusy = true;
+  $('api-key').value = ''; next = null; $('next-page').hidden = true; $('results').replaceChildren(node('p', 'Disconnected.')); $('raw-response').textContent = 'None'; $('verification-code').value = ''; $('challenge').hidden = true;
+  notice('Disconnected. Removing the saved credential…'); sync();
+  try { if (vault) await vault.forget(); if (generation === connectionGeneration) notice('Disconnected. The saved cookie and decryption key have been removed.'); }
+  catch (err) { if (generation === connectionGeneration) notice('Disconnected. ' + (err instanceof ClientError ? err.message : 'Clear this site’s cookies and storage to remove any saved credential.'), 'error'); }
+  finally { if (generation === connectionGeneration) { connectionBusy = false; sync(); } }
+});
 form('browse-form', () => run(value('feed'), {sort:value('sort'), submolt:value('submolt').trim()}));
 form('search-form', () => run('search', {q:value('query').trim()}));
 form('open-form', () => run('post', {id:value('post-id').trim()}));
@@ -297,9 +441,43 @@ $('profile-button').addEventListener('click', () => run('me'));
 $('claim-button').addEventListener('click', () => run('status'));
 $('home-button').addEventListener('click', () => run('home'));
 $('next-page').addEventListener('click', () => { if (next) run(next.action, next.params); });
-window.addEventListener('pagehide', () => session.disconnect());
-window.addEventListener('pageshow', () => { sync(); if (!session.connected) notice('Connect this browser to use the API.'); });
+async function restoreConnection() {
+  if (!vault || session.connected || connectionBusy) { sync(); return; }
+  const generation = ++connectionGeneration; connectionBusy = true; sync();
+  try {
+    const key = await vault.restore();
+    if (generation !== connectionGeneration) return;
+    if (key) { session.connect(key); notice('Reconnected using this browser’s saved encrypted credential.', 'success'); }
+    else notice('Connect this browser to use the API.');
+  } catch (err) {
+    if (generation === connectionGeneration) notice(err instanceof ClientError ? err.message : 'Connect this browser again.', 'error');
+  } finally { if (generation === connectionGeneration) { connectionBusy = false; sync(); } }
+}
+window.addEventListener('pagehide', () => { connectionGeneration++; connectionBusy = false; session.disconnect(); });
+window.addEventListener('pageshow', () => { connectionReady = restoreConnection(); });
+// The CLI invokes this interface in the page. No credential-reading operation is exposed.
+Object.defineProperty(window, 'moltbookDesk', {value:Object.freeze({
+  version:1,
+  async execute(action, params = {}) {
+    await connectionReady;
+    if (connectionBusy) return {ok:false, error:'The browser connection is being updated. Wait for it to finish.'};
+    if (action === 'connection') return {ok:true, data:{connected:session.connected, busy:session.busy}};
+    try {
+      const pending = session.request(action, params); sync();
+      const data = await pending;
+      try { display(data, action, params); notice('CLI request completed.', 'success'); }
+      catch { notice('The API request completed, but its browser display could not be updated. The CLI received the result.', 'success'); }
+      sync();
+      return {ok:true, data};
+    } catch (err) {
+      const message = err instanceof ClientError ? err.message : 'Could not complete the browser request.';
+      notice(message, 'error'); sync();
+      return {ok:false, error:message, unknownOutcome:Boolean(err.unknownOutcome)};
+    }
+  }
+}), writable:false, configurable:false});
 sync();
+connectionReady = restoreConnection();
 })();
 </script>
 </body>

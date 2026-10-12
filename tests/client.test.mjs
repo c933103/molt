@@ -1,17 +1,17 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
-import {createHash} from 'node:crypto';
+import {createHash, webcrypto} from 'node:crypto';
 import vm from 'node:vm';
 
 const html = readFileSync(new URL('../index.html', import.meta.url), 'utf8');
 const core = html.match(/\/\/ BEGIN CLIENT\n([\s\S]*?)\/\/ END CLIENT/)[1];
 const KEY = 'moltbook_test_fixture_never_a_real_key';
 function setup(fetchImpl) {
-  const context = {fetch:fetchImpl, URL, URLSearchParams, AbortController, TextDecoder, setTimeout, clearTimeout};
-  vm.runInNewContext(core + '\nthis.Session = MoltbookSession; this.operation = operation;', context);
+  const context = {fetch:fetchImpl, URL, URLSearchParams, AbortController, TextDecoder, TextEncoder, Uint8Array, btoa, atob, setTimeout, clearTimeout};
+  vm.runInNewContext(core + '\nthis.Session = MoltbookSession; this.operation = operation; this.Vault = CredentialVault;', context);
   const session = new context.Session(); session.connect(KEY);
-  return {session, operation:context.operation};
+  return {session, operation:context.operation, Vault:context.Vault};
 }
 function response(data = {success:true}, status = 200, headers = {}) {
   return new Response(JSON.stringify(data), {status, headers:{'content-type':'application/json', ...headers}});
@@ -93,13 +93,106 @@ test('a server failure after a write has an unknown outcome', async () => {
   const {session} = setup(async () => response({error:'Internal server error'}, 500));
   await assert.rejects(session.request('comment', {id:'post-123', content:'Reply'}), e => e.unknownOutcome);
 });
-test('the published page has exact CSP hashes, no storage and no active forum HTML', () => {
+test('the published page has exact CSP hashes, encrypted cookie storage and no active forum HTML', () => {
   const script = html.match(/<script>([\s\S]*?)<\/script>/)[1];
   const style = html.match(/<style>([\s\S]*?)<\/style>/)[1];
   for (const text of [script, style]) assert.ok(html.includes('sha256-' + createHash('sha256').update(text).digest('base64')));
   assert.equal(html.includes('__CSP__'), false);
   assert.match(html, /connect-src https:\/\/www\.moltbook\.com/);
-  assert.doesNotMatch(script, /\b(localStorage|sessionStorage|indexedDB|innerHTML|document\.write|eval|sendBeacon)\b/);
+  assert.doesNotMatch(script, /\b(localStorage|sessionStorage|innerHTML|document\.write|eval|sendBeacon)\b/);
+  assert.match(script, /generateKey\(\{name:'AES-GCM', length:256\}, false/);
+  assert.match(script, /Max-Age=.*Secure; SameSite=Strict/);
   assert.doesNotMatch(html, /<script[^>]+src=|<img\b|<iframe\b/);
   new vm.Script(script);
+});
+
+// A deliberately small asynchronous IndexedDB fixture; no third-party dependencies.
+// The real Web Crypto implementation performs every encrypt/decrypt operation.
+function browserFixture() {
+  const keys = new Map(), writes = []; let cookie = '', clock = Date.now();
+  const doc = {
+    get cookie() { return cookie; },
+    set cookie(value) {
+      writes.push(value);
+      cookie = value.includes('Max-Age=0;') ? '' : value.split(';')[0];
+    }
+  };
+  const db = {
+    objectStoreNames:{contains:() => true}, close() {},
+    transaction() {
+      let pending = 0, completeQueued = false;
+      const tx = {};
+      function finish() {
+        if (pending || completeQueued) return; completeQueued = true;
+        setImmediate(() => { completeQueued = false; if (!pending) tx.oncomplete?.(); });
+      }
+      function req(work) {
+        pending++; const r = {};
+        setImmediate(() => { r.result = work(); r.onsuccess?.(); pending--; finish(); });
+        return r;
+      }
+      tx.objectStore = () => ({get:id => req(() => keys.get(id)), put:(key,id) => req(() => keys.set(id,key)), delete:id => req(() => keys.delete(id))});
+      finish(); return tx;
+    }
+  };
+  const idb = {open() { const req = {}; setImmediate(() => { req.result = db; req.onsuccess?.(); }); return req; }};
+  const opts = {document:doc, indexedDB:idb, crypto:webcrypto, location:{href:'https://c933103.github.io/molt/'}, now:() => clock};
+  return {opts, keys, writes, doc, setCookie:v => { cookie = v; }, advance:ms => { clock += ms; }};
+}
+test('saved cookie and browser backup are encrypted; the wrapping key cannot be exported', async () => {
+  const {Vault} = setup(); const f = browserFixture(); const vault = new Vault(f.opts);
+  assert.equal(await vault.save(KEY), true);
+  assert.equal(f.writes.some(w => w.includes(KEY)), false);
+  assert.match(f.doc.cookie, /^__Secure-moltbook-desk-v1=v1\.[A-Za-z0-9_-]+$/);
+  assert.match(f.writes[0], /Path=\/molt\/; Max-Age=34560000; Secure; SameSite=Strict$/);
+  const key = [...f.keys.values()][0];
+  assert.equal(key.extractable, false);
+  assert.equal([...f.keys.values()].some(v => typeof v === 'string' && v.includes(KEY)), false);
+  await assert.rejects(webcrypto.subtle.exportKey('raw', key));
+  assert.equal(await new Vault(f.opts).restore(), KEY);
+});
+test('fresh nonce changes ciphertext; tampered cookies cannot override the encrypted backup', async () => {
+  const {Vault} = setup(); const f = browserFixture(); const vault = new Vault(f.opts);
+  await vault.save(KEY); const first = f.doc.cookie;
+  await vault.save(KEY); assert.notEqual(f.doc.cookie, first);
+  const token = f.doc.cookie; const index = token.length - 10;
+  f.setCookie(token.slice(0,index) + (token[index] === 'A' ? 'B' : 'A') + token.slice(index + 1));
+  assert.equal(await new Vault(f.opts).restore(), KEY);
+  f.keys.set('https://c933103.github.io/molt/|ciphertext', f.doc.cookie.split('=')[1]);
+  await assert.rejects(new Vault(f.opts).restore(), /could not be restored/);
+});
+test('disconnect removes both cookie and saved key, including a queued save racing with logout', async () => {
+  const {Vault} = setup(); const f = browserFixture(); const vault = new Vault(f.opts);
+  await vault.save(KEY); await vault.forget();
+  assert.equal(f.doc.cookie, ''); assert.equal(f.keys.size, 0); assert.equal(await vault.restore(), null);
+  const saving = vault.save(KEY); const forgetting = vault.forget();
+  assert.equal(await saving, false); await forgetting;
+  assert.equal(f.doc.cookie, ''); assert.equal(f.keys.size, 0);
+});
+test('cookie expiry requires neither manual reconnect nor renewal, even years later', async () => {
+  const {Vault} = setup(); const f = browserFixture(); const vault = new Vault(f.opts);
+  await vault.save(KEY); f.advance(5 * 365 * 24 * 60 * 60 * 1000); f.setCookie('');
+  const writesBefore = f.writes.length;
+  assert.equal(await new Vault(f.opts).restore(), KEY);
+  assert.equal(f.writes.length, writesBefore); assert.equal(f.doc.cookie, '');
+});
+test('encrypted credentials cannot be replayed at a different Pages path', async () => {
+  const {Vault} = setup(); const f = browserFixture(); await new Vault(f.opts).save(KEY);
+  const another = new Vault({...f.opts, location:{href:'https://c933103.github.io/another/'}});
+  await assert.rejects(another.restore(), /could not be restored/);
+});
+test('missing encryption keys and blocked browser storage never cause plaintext persistence', async () => {
+  const {Vault} = setup(); const f = browserFixture(); await new Vault(f.opts).save(KEY); f.keys.clear();
+  await assert.rejects(new Vault(f.opts).restore(), /could not be restored/);
+  const broken = new Vault({...f.opts, indexedDB:{open() { throw new Error('Blocked'); }}});
+  await assert.rejects(broken.save(KEY), /storage is unavailable/);
+  assert.equal(f.writes.some(w => w.includes(KEY)), false);
+});
+test('HTTPS is required; encrypted browser persistence still works when cookies are blocked', async () => {
+  const {Vault} = setup(); const f = browserFixture();
+  assert.throws(() => new Vault({...f.opts, location:{href:'http://example.invalid/molt/'}}), /HTTPS/);
+  const blockedCookies = {get cookie() { return ''; }, set cookie(_) {}};
+  const blocked = new Vault({...f.opts, document:blockedCookies});
+  assert.equal(await blocked.save(KEY), true);
+  assert.equal(await new Vault({...f.opts, document:blockedCookies}).restore(), KEY);
 });
