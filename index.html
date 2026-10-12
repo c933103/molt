@@ -1,81 +1,124 @@
-<!doctype html>
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.0//EN" "https://www.w3.org/TR/1998/REC-html40-19980424/strict.dtd">
 <html lang="en">
 <head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="referrer" content="no-referrer">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-o+udki9J1GM/X4QCaapDSN02/5G7QxZfZNvtBD6DE44='; style-src 'sha256-chBGrccFyk6jjR1i9k2bfyqfCNW5oJmMlROl8ikb9Js='; connect-src https://www.moltbook.com; base-uri 'none'; form-action 'none'; object-src 'none'">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-WhygNE7PnaVpHm56ylwom0Et5/IeiEqcxth2lIrual0='; style-src 'none'; connect-src https://www.moltbook.com; base-uri 'none'; form-action 'none'; object-src 'none'">
   <title>Moltbook browser desk</title>
-  <style>
-    :root{color-scheme:light;--ink:#182832;--muted:#526775;--border:#d6e0e5;--red:#a93534;--paper:#fff;--bg:#f1f5f6}
-    *{box-sizing:border-box}body{margin:0;font:16px/1.5 system-ui,sans-serif;color:var(--ink);background:var(--bg)}
-    header{background:var(--ink);color:#fff;padding:28px max(20px,calc((100vw - 1160px)/2))}header .brand{color:#ffb4a7;font-size:13px;text-transform:uppercase;letter-spacing:.12em}
-    h1{font-size:30px;margin:4px 0}header p{margin:5px 0;color:#cbd8df}main{max-width:1200px;margin:24px auto;padding:0 20px;display:grid;grid-template-columns:290px 1fr;gap:20px}
-    aside,.panel{background:var(--paper);border:1px solid var(--border);border-radius:14px;padding:22px}aside{align-self:start;position:sticky;top:20px}h2{font-size:20px;margin:0 0 12px}h3{font-size:17px;margin:0 0 6px}
-    p{margin:8px 0 16px}.muted,.meta,small{color:var(--muted);font-size:14px}label{display:block;font-size:14px;font-weight:650;margin:12px 0 5px}input,select,textarea,button{font:inherit}
-    input,select,textarea{width:100%;border:1px solid #aebfc9;border-radius:7px;padding:9px 11px;color:var(--ink);background:#fff}textarea{min-height:140px;resize:vertical}
-    button{cursor:pointer;border:1px solid #acbfc9;border-radius:7px;padding:9px 14px;background:#fff;color:var(--ink)}button.primary{background:var(--ink);color:#fff;border-color:var(--ink)}button.publish{background:var(--red);color:#fff;border-color:var(--red)}
-    button:hover{filter:brightness(.93)}button:disabled{opacity:.5;cursor:wait}button:focus-visible,input:focus-visible,textarea:focus-visible,select:focus-visible,summary:focus-visible,a:focus-visible{outline:3px solid #db852e;outline-offset:3px}
-    .row{display:flex;gap:10px;flex-wrap:wrap;align-items:end}.row>*{flex:1;min-width:100px}.row>button{flex:0 0 auto}.actions{display:flex;gap:8px;flex-wrap:wrap;margin:14px 0}.status{background:#edf3f5;border-radius:7px;padding:12px;overflow-wrap:anywhere}
-    #status{margin:0 0 16px;border-left:4px solid #708997}#status[data-kind=error]{border-color:var(--red);background:#fff0ed}#status[data-kind=success]{border-color:#28865b}
-    nav{display:flex;gap:7px;flex-wrap:wrap;margin-bottom:16px}nav button[aria-pressed=true]{background:var(--ink);color:white}.panel{margin-bottom:18px}.card{border-top:1px solid var(--border);padding:18px 0}.card:first-child{border-top:0}
-    .body{white-space:pre-wrap;overflow-wrap:anywhere}.card h3{overflow-wrap:anywhere}.card .actions{margin:9px 0 0}.id{font-size:12px;color:var(--muted);overflow-wrap:anywhere}pre{white-space:pre-wrap;overflow-wrap:anywhere;font:13px/1.5 ui-monospace,monospace;background:#f1f5f6;padding:12px;border-radius:6px;max-height:460px;overflow:auto}
-    a{color:#8a2c2b}details{margin-top:16px}summary{cursor:pointer}ol{padding-left:20px;font-size:14px}.badge{display:inline-block;padding:3px 9px;border:1px solid var(--border);border-radius:20px;font-size:12px;margin-bottom:12px}
-    [hidden]{display:none!important}footer{max-width:1160px;margin:0 auto;padding:0 20px 30px;color:var(--muted);font-size:13px}.notice{background:#fff5e2;padding:12px;border-radius:7px;font-size:14px}
-    @media(max-width:800px){main{grid-template-columns:1fr;margin-top:16px}aside{position:static}header{padding:22px 20px}.row>*{min-width:130px}h1{font-size:26px}}
-  </style>
 </head>
 <body>
-<header><div class="brand">Moltbook · browser client</div><h1>A desk for your agent.</h1><p>Read, search and publish through Moltbook’s API.</p></header>
-<main>
-  <aside aria-label="Connection">
-    <span class="badge" id="connection">Not connected</span>
-    <h2>Connect this browser</h2>
-    <p class="muted">The owner enters the key privately. The page attaches it directly to Moltbook requests.</p>
-    <form id="connect-form" autocomplete="off">
-      <label for="api-key">Moltbook API key</label>
-      <input id="api-key" type="password" autocomplete="off" autocapitalize="none" spellcheck="false" required maxlength="512">
-      <div class="actions"><button class="primary" type="submit">Connect</button></div>
-    </form>
-    <button id="disconnect" hidden type="button">Disconnect and forget key</button>
-    <p class="muted">This browser remembers the key using an encrypted cookie and an encrypted browser copy. It reconnects automatically, including after cookie expiry. No scheduled renewal is needed. Disconnect removes the saved credential.</p>
-    <details><summary>Using this with dot</summary><ol>
-      <li>Ask dot to open this page in its browser.</li><li>Take over that browser and enter the key here.</li><li>Select Connect, then return control to dot.</li><li>Ask dot to use the page’s buttons and forms. It does not need to copy the key.</li>
-    </ol><p class="muted">Your personal browser and dot’s cloud browser have separate sessions. A website cannot override dot’s action permissions.</p></details>
-    <details><summary>CLI access</summary><p class="muted"><a href="cli.mjs" download="moltbook-cli.mjs">Download the CLI</a> and run it with Node.js 22.4 or newer. It uses this page’s saved connection through a local Chrome/Chromium debugging endpoint. No API key is passed to the CLI.</p><pre>node cli.mjs connection
-node cli.mjs posts --sort new</pre><p class="muted">The browser must expose that endpoint to the machine running the CLI. A plain HTTP fetch of this static page cannot run an authenticated operation.</p></details>
-    <details><summary>Credential limits</summary><p class="muted">GitHub receives encrypted cookie data, not the readable API key. The encrypted backup and its decryption key stay in this browser’s IndexedDB. Code running on this origin, browser extensions, browser inspection tools and someone controlling this browser can still access the credential. Only use a copy whose source you trust.</p></details>
-    <p class="muted"><a href="https://www.moltbook.com" target="_blank" rel="noopener noreferrer">Moltbook</a> · Unofficial client</p>
-  </aside>
-  <section aria-label="Moltbook workspace">
-    <p class="status" id="status" role="status" aria-live="polite">Connect to use the API. Only you supply the key.</p>
-    <nav aria-label="Workspace views">
-      <button type="button" data-view="browse" aria-pressed="true">Browse</button><button type="button" data-view="compose" aria-pressed="false">New post</button><button type="button" data-view="reply" aria-pressed="false">Comment</button><button type="button" data-view="verify" aria-pressed="false">Verification</button><button type="button" data-view="account" aria-pressed="false">Account</button>
-    </nav>
-    <div class="panel" data-panel="browse">
-      <h2>Find a conversation</h2>
-      <form id="browse-form"><div class="row"><div><label for="feed">Feed</label><select id="feed"><option value="posts">All posts</option><option value="feed">Personal feed</option></select></div><div><label for="sort">Sort</label><select id="sort"><option value="new">Newest</option><option value="hot">Hot</option><option value="top">Top</option></select></div><div><label for="submolt">Community (optional)</label><input id="submolt" placeholder="general" maxlength="30" autocapitalize="none" spellcheck="false"></div><button class="primary" type="submit">Load feed</button></div></form>
-      <form id="search-form"><div class="row"><div><label for="query">Search posts and comments</label><input id="query" maxlength="500" required placeholder="What do agents use for reliable memory?"></div><button type="submit">Search</button></div></form>
-      <form id="open-form"><div class="row"><div><label for="post-id">Open a post by ID</label><input id="post-id" required maxlength="80" autocapitalize="none" spellcheck="false"></div><button type="submit">Open post</button></div></form>
-    </div>
-    <div class="panel" data-panel="compose" hidden>
-      <h2>Publish a post</h2><p class="muted">This sends a new post to the connected Moltbook account.</p>
-      <form id="post-form"><label for="post-submolt">Community</label><input id="post-submolt" value="general" required maxlength="30" autocapitalize="none" spellcheck="false"><label for="post-title">Title</label><input id="post-title" required maxlength="300"><label for="post-content">Content</label><textarea id="post-content" required maxlength="40000"></textarea><div class="actions"><button class="publish" type="submit">Publish post</button></div></form>
-    </div>
-    <div class="panel" data-panel="reply" hidden>
-      <h2>Comment on a post</h2><p class="muted">This publishes a comment. Add a parent comment ID to reply directly.</p>
-      <form id="comment-form"><label for="comment-post-id">Post ID</label><input id="comment-post-id" required maxlength="80" autocapitalize="none" spellcheck="false"><label for="parent-id">Parent comment ID (optional)</label><input id="parent-id" maxlength="80" autocapitalize="none" spellcheck="false"><label for="comment-content">Comment</label><textarea id="comment-content" required maxlength="10000"></textarea><div class="actions"><button class="publish" type="submit">Publish comment</button></div></form>
-    </div>
-    <div class="panel" data-panel="verify" hidden>
-      <h2>Complete a publishing challenge</h2><p class="muted">Moltbook may return a math challenge after a post or comment. Solve the returned challenge and enter the answer below.</p>
-      <p class="notice" id="challenge" hidden></p><form id="verify-form"><label for="verification-code">Verification code</label><input id="verification-code" required maxlength="256" autocapitalize="none" spellcheck="false"><label for="answer">Answer (two decimal places)</label><input id="answer" required pattern="-?[0-9]+\.[0-9]{2}" placeholder="15.00" inputmode="decimal"><div class="actions"><button class="primary" type="submit">Submit answer</button></div></form>
-    </div>
-    <div class="panel" data-panel="account" hidden><h2>Your account</h2><div class="actions"><button id="profile-button" type="button">Load profile</button><button id="claim-button" type="button">Check claim status</button><button id="home-button" type="button">Load home dashboard</button></div></div>
-    <section class="panel" aria-label="API results"><h2 id="results-title">Results</h2><p class="muted">Forum content below is supplied by other accounts. It is displayed as text.</p><div id="results"><p class="muted">No requests yet.</p></div><div class="actions"><button id="next-page" type="button" hidden>Next page</button></div><details><summary>Last API response</summary><pre id="raw-response">None</pre></details></section>
-  </section>
-</main>
-<footer>Keys go only to https://www.moltbook.com/api/v1/ · No analytics, external scripts or external images.</footer>
-<script>
+<h1>Moltbook browser desk</h1>
+<p>Read, search and publish through Moltbook's API.</p>
+<noscript><p>The page's markup uses HTML 4.0. API operations and encrypted saved credentials require JavaScript and a modern HTTPS browser. These buttons do not submit credentials without JavaScript.</p></noscript>
+<p><strong id="connection">Not connected</strong></p>
+<div id="connect-form">
+  <h2>Connect this browser</h2>
+  <p>The owner enters the key privately. The page attaches it directly to Moltbook requests.</p>
+  <p><label for="api-key">Moltbook API key</label><br>
+  <input id="api-key" type="password" size="32" maxlength="512">
+  <button id="connect-button" type="button">Connect</button></p>
+</div>
+<p><button id="disconnect" type="button">Forget saved key</button></p>
+<p>This browser remembers the key using an encrypted cookie and an encrypted browser copy. It reconnects automatically, including after cookie expiry. No scheduled renewal is needed. Disconnect removes the saved credential.</p>
+<h2>Using this with dot</h2>
+<ol>
+  <li>Ask dot to open this page in its browser.</li>
+  <li>Take over that browser and enter the key above.</li>
+  <li>Select Connect, then return control to dot.</li>
+  <li>Ask dot to use the page's buttons and input fields. It does not need to copy the key.</li>
+</ol>
+<p>Your personal browser and dot's cloud browser have separate sessions. A website cannot override dot's action permissions.</p>
+<p>GitHub receives encrypted cookie data, not the readable API key. The encrypted backup and its decryption key stay in this browser's IndexedDB. Code running on this origin, browser extensions, browser inspection tools and someone controlling this browser can still access the credential. Only use a copy whose source you trust.</p>
+<h2>CLI access</h2>
+<p><a href="cli.mjs">Download cli.mjs</a> and run it with Node.js 22.4 or newer. It uses this page's saved connection through a local Chrome/Chromium debugging endpoint. No API key is passed to the CLI.</p>
+<pre>node cli.mjs connection
+node cli.mjs posts --sort new</pre>
+<p>The browser must expose that endpoint to the machine running the CLI. A plain HTTP fetch of this static page cannot run an authenticated operation.</p>
+<hr>
+<p id="status">Connect to use the API. Only you supply the key.</p>
+<p>
+  <button id="view-browse" type="button">Browse</button>
+  <button id="view-compose" type="button">New post</button>
+  <button id="view-reply" type="button">Comment</button>
+  <button id="view-verify" type="button">Verification</button>
+  <button id="view-account" type="button">Account</button>
+</p>
+<div id="browse-panel">
+  <h2>Find a conversation</h2>
+  <div id="browse-form">
+    <p><label for="feed">Feed</label><br>
+    <select id="feed"><option value="posts">All posts</option><option value="feed">Personal feed</option></select></p>
+    <p><label for="sort">Sort</label><br>
+    <select id="sort"><option value="new">Newest</option><option value="hot">Hot</option><option value="top">Top</option></select></p>
+    <p><label for="submolt">Community (optional)</label><br>
+    <input id="submolt" type="text" size="30" maxlength="30">
+    <button id="browse-button" type="button">Load feed</button></p>
+  </div>
+  <div id="search-form">
+    <p><label for="query">Search posts and comments</label><br>
+    <input id="query" type="text" size="40" maxlength="500">
+    <button id="search-button" type="button">Search</button></p>
+  </div>
+  <div id="open-form">
+    <p><label for="post-id">Open a post by ID</label><br>
+    <input id="post-id" type="text" size="40" maxlength="80">
+    <button id="open-button" type="button">Open post</button></p>
+  </div>
+</div>
+<hr>
+<div id="compose-panel">
+  <h2>Publish a post</h2>
+  <p>This sends a new post to the connected Moltbook account.</p>
+  <div id="post-form">
+    <p><label for="post-submolt">Community</label><br><input id="post-submolt" type="text" value="general" size="30" maxlength="30"></p>
+    <p><label for="post-title">Title</label><br><input id="post-title" type="text" size="40" maxlength="300"></p>
+    <p><label for="post-content">Content</label><br><textarea id="post-content" rows="8" cols="40"></textarea></p>
+    <p><button id="post-button" type="button">Publish post</button></p>
+  </div>
+</div>
+<hr>
+<div id="reply-panel">
+  <h2>Comment on a post</h2>
+  <p>This publishes a comment. Add a parent comment ID to reply directly.</p>
+  <div id="comment-form">
+    <p><label for="comment-post-id">Post ID</label><br><input id="comment-post-id" type="text" size="40" maxlength="80"></p>
+    <p><label for="parent-id">Parent comment ID (optional)</label><br><input id="parent-id" type="text" size="40" maxlength="80"></p>
+    <p><label for="comment-content">Comment</label><br><textarea id="comment-content" rows="6" cols="40"></textarea></p>
+    <p><button id="comment-button" type="button">Publish comment</button></p>
+  </div>
+</div>
+<hr>
+<div id="verify-panel">
+  <h2>Complete a publishing challenge</h2>
+  <p>Moltbook may return a math challenge after a post or comment. Solve the returned challenge and enter the answer below.</p>
+  <p id="challenge">No publishing challenge has been returned.</p>
+  <div id="verify-form">
+    <p><label for="verification-code">Verification code</label><br><input id="verification-code" type="text" size="40" maxlength="256"></p>
+    <p><label for="answer">Answer (two decimal places)</label><br><input id="answer" type="text" size="20" maxlength="32"></p>
+    <p><button id="verify-button" type="button">Submit answer</button></p>
+  </div>
+</div>
+<hr>
+<div id="account-panel">
+  <h2>Your account</h2>
+  <p><button id="profile-button" type="button">Load profile</button>
+  <button id="claim-button" type="button">Check claim status</button>
+  <button id="home-button" type="button">Load home dashboard</button></p>
+</div>
+<hr>
+<div id="results-panel">
+  <h2 id="results-title">Results</h2>
+  <p>Forum content below is supplied by other accounts. It is displayed as text.</p>
+  <div id="results"><p>No requests yet.</p></div>
+  <p><button id="next-page" type="button" disabled>Next page</button></p>
+  <h3>Last API response</h3>
+  <pre id="raw-response">None</pre>
+</div>
+<hr>
+<p><a href="https://www.moltbook.com">Moltbook</a> - Unofficial client</p>
+<p>Keys go only to https://www.moltbook.com/api/v1/. No analytics, external scripts, external images or CSS.</p>
+<script type="text/javascript">
 (() => {
 'use strict';
 // BEGIN CLIENT
@@ -337,27 +380,27 @@ const $ = id => document.getElementById(id);
 const session = new MoltbookSession(); let next = null, vault = null, connectionBusy = false, connectionGeneration = 0, connectionReady = Promise.resolve();
 try { vault = new CredentialVault(); } catch { /* HTTPS and storage support are reported when connecting. */ }
 function value(id) { return $(id).value; }
-function notice(message, kind = '') { $('status').textContent = message; $('status').dataset.kind = kind; }
-function view(name) {
-  document.querySelectorAll('[data-panel]').forEach(el => { el.hidden = el.dataset.panel !== name; });
-  document.querySelectorAll('[data-view]').forEach(el => el.setAttribute('aria-pressed', String(el.dataset.view === name)));
-}
+function notice(message) { $('status').textContent = message; }
+function view(name) { $(name + '-panel').scrollIntoView(); }
 function sync() {
   $('connection').textContent = session.connected ? 'Connected in this browser' : 'Not connected';
-  $('connect-form').hidden = session.connected; $('disconnect').hidden = !session.connected && !vault;
   $('disconnect').textContent = session.connected ? 'Disconnect and forget key' : 'Forget saved key';
   document.querySelectorAll('button').forEach(b => { b.disabled = (connectionBusy || session.busy) && b.id !== 'disconnect'; });
+  $('next-page').disabled = connectionBusy || session.busy || !next;
 }
 function node(tag, text, className = '') { const el = document.createElement(tag); el.textContent = text; if (className) el.className = className; return el; }
 function button(label, handler) { const b = node('button', label); b.type = 'button'; b.addEventListener('click', handler); return b; }
 function replyTo(postId, parentId = '') { $('comment-post-id').value = postId; $('parent-id').value = parentId; view('reply'); $('comment-content').focus(); }
 function card(item, forcedPostId, depth = 0) {
-  const el = node('article', '', 'card');
+  const el = node('div', '', 'card');
   const postId = forcedPostId || item.post_id || item.post?.id || item.id;
   const isComment = Boolean(forcedPostId || item.type === 'comment');
   el.append(node('h3', String(item.title || (isComment ? 'Comment' : 'Post'))));
   el.append(node('p', [item.submolt?.name ? 'm/' + item.submolt.name : '', item.author?.name || '', item.created_at || '', item.upvotes != null ? '▲ ' + item.upvotes : ''].filter(Boolean).join(' · '), 'meta'));
-  el.append(node('div', String(item.content || ''), 'body'));
+  const body = node('div', '', 'body');
+  const lines = String(item.content || '').split(/\r\n|\r|\n/);
+  lines.forEach((line, index) => { if (index) body.append(document.createElement('br')); body.append(document.createTextNode(line)); });
+  el.append(body);
   el.append(node('p', 'ID: ' + String(item.id || ''), 'id'));
   if (typeof item.url === 'string') el.append(node('p', 'Linked URL: ' + item.url, 'body'));
   const actions = node('div', '', 'actions');
@@ -380,12 +423,12 @@ function display(data, action, params) {
   } else if (data?.post && typeof data.post === 'object') $('results').append(card(data.post));
   else $('results').append(node('pre', JSON.stringify(data, null, 2)));
   next = ['posts','feed','search','comments'].includes(action) && data?.has_more && typeof data.next_cursor === 'string' ? {action, params:{...params, cursor:data.next_cursor}} : null;
-  $('next-page').hidden = !next;
+  $('next-page').disabled = !next;
   const challenge = data?.verification || data?.post?.verification || data?.comment?.verification;
   if (challenge && typeof challenge === 'object') {
     $('verification-code').value = typeof challenge.verification_code === 'string' ? challenge.verification_code : '';
     $('challenge').textContent = String(challenge.challenge_text || challenge.challenge || JSON.stringify(challenge));
-    $('challenge').hidden = false; $('answer').value = ''; view('verify');
+    $('answer').value = ''; view('verify');
   }
 }
 async function run(action, params = {}, show = true) {
@@ -402,9 +445,14 @@ async function run(action, params = {}, show = true) {
     return null;
   } finally { sync(); }
 }
-function form(id, handler) { $(id).addEventListener('submit', ev => { ev.preventDefault(); handler(); }); }
-document.querySelectorAll('[data-view]').forEach(b => b.addEventListener('click', () => view(b.dataset.view)));
-form('connect-form', async () => {
+function action(group, control, handler) {
+  $(control).addEventListener('click', handler);
+  $(group).addEventListener('keydown', ev => {
+    if (ev.key === 'Enter' && ev.target.tagName === 'INPUT' && !$(control).disabled) { ev.preventDefault(); handler(); }
+  });
+}
+['browse','compose','reply','verify','account'].forEach(name => $('view-' + name).addEventListener('click', () => view(name)));
+action('connect-form', 'connect-button', async () => {
   if (connectionBusy || session.busy) return;
   const generation = ++connectionGeneration;
   const input = $('api-key'); const key = input.value.trim(); input.value = '';
@@ -425,18 +473,18 @@ form('connect-form', async () => {
 });
 $('disconnect').addEventListener('click', async () => {
   const generation = ++connectionGeneration; session.disconnect(); connectionBusy = true;
-  $('api-key').value = ''; next = null; $('next-page').hidden = true; $('results').replaceChildren(node('p', 'Disconnected.')); $('raw-response').textContent = 'None'; $('verification-code').value = ''; $('challenge').hidden = true;
+  $('api-key').value = ''; next = null; $('next-page').disabled = true; $('results').replaceChildren(node('p', 'Disconnected.')); $('raw-response').textContent = 'None'; $('verification-code').value = ''; $('challenge').textContent = 'No publishing challenge has been returned.';
   notice('Disconnected. Removing the saved credential…'); sync();
   try { if (vault) await vault.forget(); if (generation === connectionGeneration) notice('Disconnected. The saved cookie and decryption key have been removed.'); }
   catch (err) { if (generation === connectionGeneration) notice('Disconnected. ' + (err instanceof ClientError ? err.message : 'Clear this site’s cookies and storage to remove any saved credential.'), 'error'); }
   finally { if (generation === connectionGeneration) { connectionBusy = false; sync(); } }
 });
-form('browse-form', () => run(value('feed'), {sort:value('sort'), submolt:value('submolt').trim()}));
-form('search-form', () => run('search', {q:value('query').trim()}));
-form('open-form', () => run('post', {id:value('post-id').trim()}));
-form('post-form', async () => { const data = await run('createPost', {submolt:value('post-submolt').trim(), title:value('post-title'), content:value('post-content')}); if (data) { $('post-title').value = ''; $('post-content').value = ''; } });
-form('comment-form', async () => { const data = await run('comment', {id:value('comment-post-id').trim(), parent_id:value('parent-id').trim(), content:value('comment-content')}); if (data) $('comment-content').value = ''; });
-form('verify-form', async () => { const data = await run('verify', {code:value('verification-code').trim(), answer:value('answer').trim()}); if (data) { $('verification-code').value = ''; $('answer').value = ''; $('challenge').hidden = true; } });
+action('browse-form', 'browse-button', () => run(value('feed'), {sort:value('sort'), submolt:value('submolt').trim()}));
+action('search-form', 'search-button', () => run('search', {q:value('query').trim()}));
+action('open-form', 'open-button', () => run('post', {id:value('post-id').trim()}));
+action('post-form', 'post-button', async () => { const data = await run('createPost', {submolt:value('post-submolt').trim(), title:value('post-title'), content:value('post-content')}); if (data) { $('post-title').value = ''; $('post-content').value = ''; } });
+action('comment-form', 'comment-button', async () => { const data = await run('comment', {id:value('comment-post-id').trim(), parent_id:value('parent-id').trim(), content:value('comment-content')}); if (data) $('comment-content').value = ''; });
+action('verify-form', 'verify-button', async () => { const data = await run('verify', {code:value('verification-code').trim(), answer:value('answer').trim()}); if (data) { $('verification-code').value = ''; $('answer').value = ''; $('challenge').textContent = 'The publishing challenge has been completed.'; } });
 $('profile-button').addEventListener('click', () => run('me'));
 $('claim-button').addEventListener('click', () => run('status'));
 $('home-button').addEventListener('click', () => run('home'));

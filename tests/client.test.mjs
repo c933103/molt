@@ -94,9 +94,9 @@ test('a server failure after a write has an unknown outcome', async () => {
   await assert.rejects(session.request('comment', {id:'post-123', content:'Reply'}), e => e.unknownOutcome);
 });
 test('the published page has exact CSP hashes, encrypted cookie storage and no active forum HTML', () => {
-  const script = html.match(/<script>([\s\S]*?)<\/script>/)[1];
-  const style = html.match(/<style>([\s\S]*?)<\/style>/)[1];
-  for (const text of [script, style]) assert.ok(html.includes('sha256-' + createHash('sha256').update(text).digest('base64')));
+  const script = html.match(/<script\b[^>]*>([\s\S]*?)<\/script>/)[1];
+  assert.ok(html.includes('sha256-' + createHash('sha256').update(script).digest('base64')));
+  assert.match(html, /style-src 'none'/);
   assert.equal(html.includes('__CSP__'), false);
   assert.match(html, /connect-src https:\/\/www\.moltbook\.com/);
   assert.doesNotMatch(script, /\b(localStorage|sessionStorage|innerHTML|document\.write|eval|sendBeacon)\b/);
