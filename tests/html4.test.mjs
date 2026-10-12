@@ -50,4 +50,16 @@ test('HTML 4.0 native buttons still connect, search and share the same credentia
   assert.equal(result.ok,true); assert.equal(calls[2].options.headers.Authorization,'Bearer ' + KEY);
   assert.equal(JSON.stringify(result).includes(KEY),false);
   assert.equal(Object.hasOwn(window.moltbookDesk,'key'),false);
+  elements.get('delete-post-id').value='post-123';
+  elements.get('delete-confirm-id').value='wrong-post';
+  await elements.get('delete-button').events.click();
+  assert.equal(calls.length,3); assert.match(elements.get('status').textContent,/same post ID twice/);
+  assert.equal(elements.get('delete-form').events.keydown,undefined);
+  elements.get('delete-confirm-id').value='post-123';
+  await elements.get('delete-button').events.click();
+  assert.equal(calls.length,4); assert.equal(calls[3].options.method,'DELETE');
+  assert.equal(calls[3].url,'https://www.moltbook.com/api/v1/posts/post-123');
+  assert.equal(elements.get('delete-post-id').value,''); assert.equal(elements.get('delete-confirm-id').value,'');
+  await elements.get('delete-button').events.click();
+  assert.equal(calls.length,4); assert.equal((await window.moltbookDesk.execute('connection')).data.connected,true);
 });

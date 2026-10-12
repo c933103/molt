@@ -4,7 +4,7 @@
   <meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="referrer" content="no-referrer">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-WhygNE7PnaVpHm56ylwom0Et5/IeiEqcxth2lIrual0='; style-src 'none'; connect-src https://www.moltbook.com; base-uri 'none'; form-action 'none'; object-src 'none'">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-Kb8AUxLZi5/HlDUU0wOgBdsb0MIWZ7yO/fFRZ3M+nHg='; style-src 'none'; connect-src https://www.moltbook.com; base-uri 'none'; form-action 'none'; object-src 'none'">
   <title>Moltbook browser desk</title>
 </head>
 <body>
@@ -41,6 +41,7 @@ node cli.mjs posts --sort new</pre>
   <button id="view-browse" type="button">Browse</button>
   <button id="view-compose" type="button">New post</button>
   <button id="view-reply" type="button">Comment</button>
+  <button id="view-delete" type="button">Delete post</button>
   <button id="view-verify" type="button">Verification</button>
   <button id="view-account" type="button">Account</button>
 </p>
@@ -89,6 +90,16 @@ node cli.mjs posts --sort new</pre>
   </div>
 </div>
 <hr>
+<div id="delete-panel">
+  <h2>Delete your post</h2>
+  <p>This permanently deletes a post from the connected Moltbook account. This client provides no undo. Check the post first, then enter its exact ID twice. Only the post endpoint is called; no account or repository is deleted.</p>
+  <div id="delete-form">
+    <p><label for="delete-post-id">Post ID to delete</label><br><input id="delete-post-id" type="text" size="40" maxlength="80"></p>
+    <p><label for="delete-confirm-id">Confirm the same post ID</label><br><input id="delete-confirm-id" type="text" size="40" maxlength="80"></p>
+    <p><button id="delete-button" type="button">Permanently delete this post</button></p>
+  </div>
+</div>
+<hr>
 <div id="verify-panel">
   <h2>Complete a publishing challenge</h2>
   <p>Moltbook may return a math challenge after a post or comment. Solve the returned challenge and enter the answer below.</p>
@@ -125,7 +136,7 @@ node cli.mjs posts --sort new</pre>
 const API_ORIGIN = 'https://www.moltbook.com';
 const API_BASE = API_ORIGIN + '/api/v1';
 const RESPONSE_LIMIT = 2 * 1024 * 1024;
-const MUTATIONS = new Set(['createPost', 'comment', 'upvote', 'downvote', 'verify']);
+const MUTATIONS = new Set(['createPost', 'comment', 'upvote', 'downvote', 'verify', 'deletePost']);
 class ClientError extends Error {
   constructor(message, unknownOutcome = false) { super(message); this.name = 'ClientError'; this.unknownOutcome = unknownOutcome; }
 }
@@ -279,6 +290,10 @@ function operation(action, p = {}) {
       if (p.cursor) query.set('cursor', checkedText(p.cursor, 'cursor', 4096));
       break;
     case 'post': path = '/posts/' + checkedId(p.id); break;
+    case 'deletePost':
+      path = '/posts/' + checkedId(p.id); method = 'DELETE';
+      if (p.confirm_id !== p.id) throw new ClientError('Confirm deletion by entering the same post ID twice.');
+      break;
     case 'comments':
       path = '/posts/' + checkedId(p.id) + '/comments'; query.set('sort', 'new'); query.set('limit', '35');
       if (p.cursor) query.set('cursor', checkedText(p.cursor, 'cursor', 4096));
@@ -341,6 +356,7 @@ class MoltbookSession {
       if (epoch !== this.#epoch) throw new ClientError('Disconnected. The pending response was discarded.', MUTATIONS.has(action));
       receivedResponse = true;
       if (res.url && new URL(res.url).origin !== API_ORIGIN) throw new ClientError('Unexpected API response origin.', MUTATIONS.has(action));
+      if (action === 'deletePost' && res.status === 204) return {success:true, deleted_post_id:params.id};
       if (!res.headers.get('content-type')?.toLowerCase().includes('application/json')) throw new ClientError('Moltbook returned a non-JSON response.', MUTATIONS.has(action));
       const advertised = Number(res.headers.get('content-length') || 0);
       if (advertised > RESPONSE_LIMIT) throw new ClientError('API response exceeds the size limit.', MUTATIONS.has(action));
@@ -414,7 +430,7 @@ function card(item, forcedPostId, depth = 0) {
 }
 function display(data, action, params) {
   $('raw-response').textContent = JSON.stringify(data, null, 2);
-  $('results-title').textContent = ['createPost','comment','verify','upvote','downvote'].includes(action) ? 'Action response' : 'Results';
+  $('results-title').textContent = MUTATIONS.has(action) ? 'Action response' : 'Results';
   $('results').replaceChildren();
   const items = Array.isArray(data?.posts) ? data.posts : Array.isArray(data?.results) ? data.results : Array.isArray(data?.comments) ? data.comments : null;
   if (items) {
@@ -451,7 +467,7 @@ function action(group, control, handler) {
     if (ev.key === 'Enter' && ev.target.tagName === 'INPUT' && !$(control).disabled) { ev.preventDefault(); handler(); }
   });
 }
-['browse','compose','reply','verify','account'].forEach(name => $('view-' + name).addEventListener('click', () => view(name)));
+['browse','compose','reply','delete','verify','account'].forEach(name => $('view-' + name).addEventListener('click', () => view(name)));
 action('connect-form', 'connect-button', async () => {
   if (connectionBusy || session.busy) return;
   const generation = ++connectionGeneration;
@@ -484,6 +500,14 @@ action('search-form', 'search-button', () => run('search', {q:value('query').tri
 action('open-form', 'open-button', () => run('post', {id:value('post-id').trim()}));
 action('post-form', 'post-button', async () => { const data = await run('createPost', {submolt:value('post-submolt').trim(), title:value('post-title'), content:value('post-content')}); if (data) { $('post-title').value = ''; $('post-content').value = ''; } });
 action('comment-form', 'comment-button', async () => { const data = await run('comment', {id:value('comment-post-id').trim(), parent_id:value('parent-id').trim(), content:value('comment-content')}); if (data) $('comment-content').value = ''; });
+// Destructive actions require an explicit button click, never Enter in a field.
+$('delete-button').addEventListener('click', async () => {
+  const data = await run('deletePost', {id:value('delete-post-id').trim(), confirm_id:value('delete-confirm-id').trim()});
+  if (data) {
+    $('delete-post-id').value = ''; $('delete-confirm-id').value = '';
+    notice('Moltbook accepted the deletion. Check the public post to verify removal.');
+  }
+});
 action('verify-form', 'verify-button', async () => { const data = await run('verify', {code:value('verification-code').trim(), answer:value('answer').trim()}); if (data) { $('verification-code').value = ''; $('answer').value = ''; $('challenge').textContent = 'The publishing challenge has been completed.'; } });
 $('profile-button').addEventListener('click', () => run('me'));
 $('claim-button').addEventListener('click', () => run('status'));
