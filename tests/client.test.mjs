@@ -93,6 +93,40 @@ test('a server failure after a write has an unknown outcome', async () => {
   const {session} = setup(async () => response({error:'Internal server error'}, 500));
   await assert.rejects(session.request('comment', {id:'post-123', content:'Reply'}), e => e.unknownOutcome);
 });
+test('post deletion is bounded to a confirmed exact post endpoint', async () => {
+  const calls = [];
+  const {session, operation} = setup(async (...args) => { calls.push(args); return response({success:true}); });
+  for (const p of [{id:'post-123'}, {id:'post-123',confirm_id:'other'}, {id:'../agents/me',confirm_id:'../agents/me'}, {id:'',confirm_id:''}]) {
+    await assert.rejects(session.request('deletePost',p));
+  }
+  assert.equal(calls.length,0);
+  const op = operation('deletePost',{id:'post-123',confirm_id:'post-123',url:'https://evil.invalid',body:{ignored:true}});
+  assert.equal(op.url,'https://www.moltbook.com/api/v1/posts/post-123');
+  assert.equal(op.method,'DELETE'); assert.equal(op.body,undefined);
+  await session.request('deletePost',{id:'post-123',confirm_id:'post-123'});
+  assert.equal(calls.length,1); assert.equal(calls[0][1].method,'DELETE');
+  assert.equal(calls[0][1].body,undefined); assert.equal(session.connected,true);
+  assert.equal(calls[0][1].headers.Authorization,'Bearer ' + KEY);
+});
+test('deletion supports empty HTTP 204 and never retries unknown outcomes', async () => {
+  const noContent = setup(async () => new Response(null,{status:204}));
+  const result = await noContent.session.request('deletePost',{id:'post-123',confirm_id:'post-123'});
+  assert.equal(result.success,true); assert.equal(result.deleted_post_id,'post-123');
+  let calls=0;
+  const failed = setup(async () => { calls++; throw new TypeError('network failure'); });
+  await assert.rejects(failed.session.request('deletePost',{id:'post-123',confirm_id:'post-123'}), e => e.unknownOutcome && e.message.includes('before retrying'));
+  assert.equal(calls,1);
+  const serverError = setup(async () => response({error:'Internal error'},500));
+  await assert.rejects(serverError.session.request('deletePost',{id:'post-123',confirm_id:'post-123'}), e => e.unknownOutcome);
+});
+test('repeated delete clicks cannot race an in-flight deletion', async () => {
+  let release,calls=0;
+  const {session} = setup(() => { calls++; return new Promise(resolve => { release=resolve; }); });
+  const params={id:'post-123',confirm_id:'post-123'};
+  const pending=session.request('deletePost',params);
+  await assert.rejects(session.request('deletePost',params),/already running/);
+  release(response()); await pending; assert.equal(calls,1);
+});
 test('the published page has exact CSP hashes, encrypted cookie storage and no active forum HTML', () => {
   const script = html.match(/<script\b[^>]*>([\s\S]*?)<\/script>/)[1];
   assert.ok(html.includes('sha256-' + createHash('sha256').update(script).digest('base64')));

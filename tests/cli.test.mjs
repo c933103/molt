@@ -18,6 +18,17 @@ test('debugging endpoints and sockets are restricted to the selected loopback or
   assert.equal(socketURL('ws://127.0.0.1:9222/devtools/page/fixture',endpoint).hostname,'127.0.0.1');
   for (const url of ['ws://evil.invalid:9222/devtools/page/x','ws://127.0.0.1:1234/devtools/page/x','ws://127.0.0.1:9222/devtools/browser/x']) assert.throws(() => socketURL(url,endpoint));
 });
+test('CLI delete requires matching target confirmation and serializes only the bounded operation', async () => {
+  assert.throws(() => parseArgs(['delete','--id','post-123']),/Required/);
+  assert.throws(() => parseArgs(['delete','--id','post-123','--confirm-id','other']),/same post ID/);
+  const request=parseArgs(['delete','--id','post-123','--confirm-id','post-123']);
+  assert.equal(request.action,'deletePost');
+  assert.deepEqual(request.params,{id:'post-123',confirm_id:'post-123'});
+  const page=pageURL(); let called;
+  const context={location:{origin:page.origin,pathname:page.pathname,search:'',hash:''},window:{moltbookDesk:{version:1,async execute(action,params) { called={action,params}; return {ok:true,data:{success:true}}; }}}};
+  await vm.runInNewContext(requestExpression(request.action,request.params,page),context);
+  assert.equal(called.action,'deletePost'); assert.equal(called.params.confirm_id,'post-123');
+});
 test('only the exact requested page is selected; duplicate tabs require a selection', () => {
   const page = pageURL();
   const one = {id:'one',type:'page',url:page.href};
@@ -71,6 +82,7 @@ test('lost browser response after a write is reported as an unknown outcome, not
     send() { setImmediate(() => this.handlers.close?.({})); }
     close() {}
   };
-  const request = parseArgs(['upvote','--id','post-123']);
-  await assert.rejects(executeBrowser(request,{fetchImpl:async () => new Response(JSON.stringify(targets())), WebSocketImpl:Broken}), /Check the account before retrying/);
+  for (const args of [['upvote','--id','post-123'],['delete','--id','post-123','--confirm-id','post-123']]) {
+    await assert.rejects(executeBrowser(parseArgs(args),{fetchImpl:async () => new Response(JSON.stringify(targets())), WebSocketImpl:Broken}), /Check the account before retrying/);
+  }
 });
