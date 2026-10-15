@@ -292,3 +292,92 @@ test('Disconnect while saving the connection prevents the later automatic downlo
   assert.equal((await f.window.moltbookDesk.execute('connection')).data.connected,false);
 });
 
+
+
+test('vote buttons retain the exact sanitized outcome without replacing the post or pagination', async () => {
+  for (const action of ['upvote', 'downvote']) for (const outcome of ['added', 'removed', 'unchanged']) {
+    let finish;
+    const post = {id:'receipt-post',title:'Receipt fixture',content:'Public text',upvotes:4};
+    const fixture = pageFixture({fetch:async (url) => {
+      if (url.endsWith('/' + action)) return new Promise(resolve => { finish=resolve; });
+      return new Response(JSON.stringify(url.includes('/posts?')
+        ? {success:true,posts:[post],has_more:true,next_cursor:'fixture-next'}
+        : {success:true,agent:{name:'Fixture'}}),{headers:{'content-type':'application/json'}});
+    }});
+    await fixture.connect();
+    await fixture.window.moltbookDesk.execute('posts',{sort:'new'});
+    const before = fixture.elements.get('results').children.slice();
+    const walk = elements => elements.flatMap(element => [element,...walk(element.children || [])]);
+    const control = walk(before).find(element => element.tagName==='BUTTON' && element.textContent===(action==='upvote'?'Upvote':'Downvote'));
+    assert.ok(control);
+    const countBefore = fixture.calls.length;
+    const pending = control.events.click();
+    assert.deepEqual(JSON.parse(fixture.elements.get('raw-response').textContent),{action,post_id:post.id,state:'pending'});
+    finish(new Response(JSON.stringify({success:true,action:outcome,message:'Server result '+outcome,echo:KEY,secret:'synthetic-secret'}),{headers:{'content-type':'application/json'}}));
+    await pending;
+    const receipt = JSON.parse(fixture.elements.get('raw-response').textContent);
+    assert.equal(receipt.action,action); assert.equal(receipt.post_id,post.id);
+    assert.equal(receipt.state,'response_received'); assert.equal(receipt.response.action,outcome);
+    assert.equal(receipt.response.message,'Server result '+outcome);
+    assert.equal(receipt.response.echo,'[credential removed]'); assert.equal(receipt.response.secret,'[credential removed]');
+    assert.equal(fixture.elements.get('raw-response').textContent.includes(KEY),false);
+    assert.deepEqual(fixture.elements.get('results').children,before);
+    assert.equal(fixture.elements.get('next-page').disabled,false);
+    assert.equal(fixture.calls.length,countBefore+1,'Exactly one vote request, with no automatic retry');
+  }
+});
+
+test('failed and uncertain votes replace the prior receipt honestly and never retry', async () => {
+  for (const failure of ['rejected','network','malformed']) {
+    const fixture = pageFixture({fetch:async (url) => {
+      if (url.endsWith('/upvote')) {
+        if (failure==='network') throw Error('Synthetic transport failure');
+        if (failure==='malformed') return new Response('{',{headers:{'content-type':'application/json'}});
+        return new Response(JSON.stringify({success:false,error:'Fixture rejection '+KEY}),{status:400,headers:{'content-type':'application/json'}});
+      }
+      return new Response(JSON.stringify(url.includes('/posts?')
+        ? {success:true,posts:[{id:'receipt-post',title:'Fixture',content:'Public'}]}
+        : {success:true,agent:{name:'Fixture'}}),{headers:{'content-type':'application/json'}});
+    }});
+    await fixture.connect(); await fixture.window.moltbookDesk.execute('posts',{sort:'new'});
+    const before = fixture.elements.get('results').children.slice();
+    const walk = elements => elements.flatMap(element => [element,...walk(element.children || [])]);
+    const control = walk(before).find(element => element.tagName==='BUTTON' && element.textContent==='Upvote');
+    const calls = fixture.calls.length; await control.events.click();
+    const receipt=JSON.parse(fixture.elements.get('raw-response').textContent);
+    assert.equal(receipt.action,'upvote'); assert.equal(receipt.post_id,'receipt-post');
+    assert.equal(receipt.state,failure==='rejected'?'request_failed':'unknown_outcome');
+    assert.equal('response' in receipt,false); assert.equal(receipt.error.includes(KEY),false);
+    if (failure!=='rejected') assert.match(receipt.error,/before retrying|before repeating/);
+    assert.deepEqual(fixture.elements.get('results').children,before);
+    assert.equal(fixture.calls.length,calls+1);
+  }
+});
+
+test('repeated vote clicks do not dispatch twice and disconnect cannot expose a late response', async () => {
+  let finish;
+  const fixture = pageFixture({fetch:async (url) => {
+    if (url.endsWith('/upvote')) return new Promise(resolve => { finish=resolve; });
+    return new Response(JSON.stringify(url.includes('/posts?')
+      ? {success:true,posts:[{id:'receipt-post',title:'Fixture',content:'Public'}]}
+      : {success:true,agent:{name:'Fixture'}}),{headers:{'content-type':'application/json'}});
+  }});
+  await fixture.connect(); await fixture.window.moltbookDesk.execute('posts',{sort:'new'});
+  const walk = elements => elements.flatMap(element => [element,...walk(element.children || [])]);
+  const control = walk(fixture.elements.get('results').children).find(element => element.tagName==='BUTTON' && element.textContent==='Upvote');
+  const calls=fixture.calls.length;
+  const first=control.events.click();
+  await control.events.click();
+  assert.equal(fixture.calls.length,calls+1);
+  assert.equal(JSON.parse(fixture.elements.get('raw-response').textContent).state,'pending');
+  await fixture.elements.get('disconnect').events.click();
+  finish(new Response(JSON.stringify({success:true,action:'added',secret:KEY,message:'late-response-marker'}),{headers:{'content-type':'application/json'}}));
+  await first;
+  const receipt=JSON.parse(fixture.elements.get('raw-response').textContent);
+  assert.equal(receipt.state,'unknown_outcome'); assert.equal('response' in receipt,false);
+  assert.doesNotMatch(fixture.elements.get('raw-response').textContent,/late-response-marker/);
+  assert.equal(fixture.elements.get('raw-response').textContent.includes(KEY),false);
+  assert.match(fixture.elements.get('connection').textContent,/Not connected/);
+  assert.equal(fixture.elements.get('results').children[0].textContent,'Disconnected.');
+  assert.equal(fixture.calls.length,calls+1);
+});
