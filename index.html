@@ -4,7 +4,7 @@
   <meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="referrer" content="no-referrer">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-KpcHnCWhy6LT6njiP69jTJMfP7524L9RLgD+XrPI4XI='; style-src 'none'; connect-src https://www.moltbook.com; base-uri 'none'; form-action 'none'; object-src 'none'">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-8Y4Psub7TmJ15+dbwYC4bkokCpstuNT8UbF/ICPFqIQ='; style-src 'none'; connect-src https://www.moltbook.com; base-uri 'none'; form-action 'none'; object-src 'none'">
   <title>Moltbook browser desk</title>
 </head>
 <body>
@@ -314,22 +314,35 @@ class CredentialVault {
   restore() {
     const generation = this.#generation;
     return this.#schedule(async () => {
+      // Report only the stage that failed, never browser exception details or saved values.
+      let failure = 'Browser credential storage is unavailable. Saved connection status could not be checked. Reload to retry; saved copies were not removed.';
       try {
+        if (!this.#crypto?.subtle) {
+          failure = 'Web Crypto is unavailable in this browser. Saved connection status could not be checked securely. Saved copies were not removed.';
+          throw new Error('Web Crypto unavailable');
+        }
         const {key, token:backup} = await this.#stored('readonly');
         if (generation !== this.#generation) return null;
         let token = backup || this.#tabToken() || this.#cookie(); if (!token) return null;
+        failure = 'The saved credential could not be restored because its encrypted record is invalid. Saved copies were not removed.';
         if (!/^v[12]\.[A-Za-z0-9_-]{40,1600}$/.test(token)) throw new Error('Invalid envelope');
         const version = Number(token[1]);
         const encoded = token.slice(3).replace(/-/g,'+').replace(/_/g,'/');
         const bytes = Uint8Array.from(atob(encoded), c => c.charCodeAt(0));
-        if (!this.#validKey(key)) throw new Error('Missing encryption key');
+        failure = 'The saved credential could not be restored because its browser encryption key is missing. Saved copies were not removed.';
+        if (!key) throw new Error('Missing encryption key');
+        failure = 'The saved credential could not be restored because its browser encryption key is invalid. Saved copies were not removed.';
+        if (!this.#validKey(key)) throw new Error('Invalid encryption key');
+        failure = 'The saved credential could not be restored because decryption failed. Saved copies were not removed.';
         const plain = new Uint8Array(await this.#crypto.subtle.decrypt({name:'AES-GCM', iv:bytes.slice(0,12), additionalData:this.#aad(version), tagLength:128}, key, bytes.slice(12)));
         let value;
+        failure = 'The saved credential could not be restored because its decrypted contents failed validation. Saved copies were not removed.';
         try { value = version === 2 ? CredentialZip.unpack(plain) : JSON.parse(new TextDecoder().decode(plain)).key; } finally { plain.fill(0); }
         if (generation !== this.#generation) return null;
         if (typeof value !== 'string' || !KEY_PATTERN.test(value)) throw new Error('Invalid credential');
         if (version === 1) {
           // Upgrade existing connections without rewriting or renewing their cookie.
+          failure = 'The saved credential could not be restored because its storage upgrade could not be completed. Reload to retry; saved copies were not removed.';
           token = await this.#seal(value,key);
           if (generation !== this.#generation) return null;
           await this.#stored('readwrite',null,false,{key,token});
@@ -339,8 +352,8 @@ class CredentialVault {
         return value;
       } catch {
         if (generation !== this.#generation) return null;
-        // Keep the encrypted cookie on transient storage failures so a later attempt can recover it.
-        throw new ClientError('The saved credential could not be restored. Connect again or disconnect to remove it.');
+        // Retain every existing copy, including on transient storage failures.
+        throw new ClientError(failure);
       }
     });
   }
@@ -696,3 +709,4 @@ connectionReady = restoreConnection();
 </script>
 </body>
 </html>
+
