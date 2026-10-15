@@ -13,6 +13,41 @@ test('HTML 4.0 markup has valid controls and labels and no CSS or HTML5 attribut
   assert.equal(result.status,0,result.stderr);
   assert.doesNotMatch(html, /<form\b/); // Password fields cannot fall back to native HTTP submission.
 });
+test('startup displays sanitized storage and crypto diagnostics without connecting or requesting', async t => {
+  for (const missingCrypto of [false,true]) await t.test(missingCrypto ? 'Web Crypto unavailable' : 'IndexedDB blocked',async () => {
+    const elements = new Map(); let requests = 0;
+    class Element {
+      constructor(tag,id='') { this.tagName=tag.toUpperCase(); this.id=id; this.value=''; this.disabled=false; this.textContent=''; }
+      addEventListener() {}
+    }
+    for (const match of html.matchAll(/<([a-z][a-z0-9]*)\b[^>]*\bid="([^"]+)"[^>]*>/g)) elements.set(match[2],new Element(match[1],match[2]));
+    const document = {
+      getElementById:id => elements.get(id),
+      querySelectorAll:() => [...elements.values()].filter(e => e.tagName==='BUTTON'),
+      get cookie() { return ''; }
+    };
+    const window = {addEventListener() {}};
+    const marker = 'synthetic_exception_content_never_show';
+    const context = {
+      document,window,URL,URLSearchParams,AbortController,TextDecoder,TextEncoder,Uint8Array,Blob,
+      crypto:missingCrypto ? {} : webcrypto,
+      indexedDB:{open() { throw new Error(marker); }},
+      location:{href:'https://c933103.github.io/molt/'},sessionStorage:{getItem() { return null; }},
+      btoa,atob,setTimeout,clearTimeout,
+      fetch() { requests++; throw new Error('Unexpected network request'); }
+    };
+    vm.runInNewContext(script,context);
+    const result = await window.moltbookDesk.execute('connection');
+    assert.equal(result.data.connected,false); assert.equal(requests,0);
+    assert.equal(elements.get('connection').textContent,'Not connected');
+    const message = elements.get('status').textContent;
+    assert.match(message,missingCrypto ? /Web Crypto is unavailable/ : /Browser credential storage is unavailable/);
+    assert.match(message,/Saved connection status could not be checked/);
+    assert.equal(message.includes(marker),false);
+    assert.equal(elements.get('connect-button').disabled,false);
+  });
+});
+
 test('native controls connect, download and restore an external ZIP, and share the connection with the CLI', async () => {
   const elements = new Map(), calls = [], downloads = [], links = [], revoked = [], KEY = 'moltbook_html4_fixture_not_a_real_key';
   class Element {
@@ -104,3 +139,4 @@ test('native controls connect, download and restore an external ZIP, and share t
   assert.equal(calls.length,5,'An import cancelled by Disconnect cannot authenticate');
   assert.equal((await window.moltbookDesk.execute('connection')).data.connected,false);
 });
+

@@ -339,6 +339,164 @@ test('ZIP parser rejects malformed, oversized, damaged and path-bearing archives
   }
 });
 
+test('empty readable storage reports no saved connection without writes or requests', async () => {
+  let calls = 0;
+  const {Vault} = setup(() => { calls++; throw new Error('Unexpected network request'); });
+  const f = browserFixture();
+  assert.equal(await new Vault(f.opts).restore(),null);
+  assert.equal(f.keys.size,0); assert.equal(f.writes.length,0); assert.equal(f.sessionValues.size,0); assert.equal(calls,0);
+});
+
+test('unavailable storage and crypto do not claim a saved credential exists or is damaged', async t => {
+  const cases = [
+    ['absent IndexedDB', f => { f.opts.indexedDB = null; }, /Browser credential storage is unavailable/],
+    ['throwing IndexedDB', f => { f.opts.indexedDB = {open() { throw new Error(KEY); }}; }, /Browser credential storage is unavailable/],
+    ['failed IndexedDB open', f => { f.opts.indexedDB = {open() { const req={}; setImmediate(() => req.onerror?.({message:KEY})); return req; }}; }, /Browser credential storage is unavailable/],
+    ['blocked IndexedDB open', f => { f.opts.indexedDB = {open() { const req={}; setImmediate(() => req.onblocked?.({message:KEY})); return req; }}; }, /Browser credential storage is unavailable/],
+    ['unavailable Web Crypto', f => { f.opts.crypto = {}; }, /Web Crypto is unavailable/],
+    ['inaccessible cookie', f => { f.opts.document = {get cookie() { throw new Error(KEY); }}; }, /Browser credential storage is unavailable/]
+  ];
+  for (const [name,change,pattern] of cases) await t.test(name,async () => {
+    let calls = 0;
+    const {Vault} = setup(() => { calls++; throw new Error('Unexpected network request'); });
+    const f = browserFixture(); change(f);
+    await assert.rejects(new Vault(f.opts).restore(),err => {
+      assert.match(err.message,pattern);
+      assert.match(err.message,/Saved connection status could not be checked/);
+      assert.match(err.message,/saved copies were not removed/i);
+      assert.doesNotMatch(err.message,/saved credential could not be restored|Connect again|disconnect to remove/i);
+      assert.equal(err.message.includes(KEY),false);
+      return true;
+    });
+    assert.equal(f.keys.size,0); assert.equal(f.writes.length,0); assert.equal(f.sessionValues.size,0); assert.equal(calls,0);
+  });
+});
+
+async function rejectsRestoreWithoutChangingCopies(Vault,f,pattern) {
+  const keys = [...f.keys], session = [...f.sessionValues], cookie = f.doc.cookie, writes = [...f.writes];
+  const forbidden = [KEY,...keys.map(([,value]) => value).filter(value => typeof value === 'string'),...session.map(([,value]) => value)];
+  await assert.rejects(new Vault(f.opts).restore(),err => {
+    assert.equal(err.name,'ClientError');
+    assert.match(err.message,pattern); assert.match(err.message,/saved copies were not removed/i);
+    for (const value of forbidden) if (value) assert.equal(err.message.includes(value),false);
+    return true;
+  });
+  assert.deepEqual([...f.keys],keys); assert.deepEqual([...f.sessionValues],session);
+  assert.equal(f.doc.cookie,cookie); assert.deepEqual(f.writes,writes);
+}
+
+test('unreadable session storage is not treated as absent when no other token can be read', async t => {
+  for (const missing of [false,true]) await t.test(missing ? 'unavailable session API' : 'denied session read',async () => {
+    const {Vault} = setup(); const f = browserFixture(); await new Vault(f.opts).save(KEY);
+    f.keys.delete('https://c933103.github.io/molt/|ciphertext'); f.setCookie('');
+    f.opts.sessionStorage = missing ? null : {
+      getItem() { throw new Error(KEY); },
+      setItem() { throw new Error(KEY); },
+      removeItem() { throw new Error(KEY); }
+    };
+    await rejectsRestoreWithoutChangingCopies(Vault,f,/Browser credential storage is unavailable/);
+  });
+});
+
+test('unreadable session storage still allows the existing cookie fallback', async () => {
+  const {Vault} = setup(); const f = browserFixture(); await new Vault(f.opts).save(KEY);
+  f.keys.delete('https://c933103.github.io/molt/|ciphertext');
+  const cookie = f.doc.cookie, writes = [...f.writes], session = [...f.sessionValues];
+  f.opts.sessionStorage = {getItem() { throw new Error(KEY); },setItem() { throw new Error(KEY); }};
+  assert.equal(await new Vault(f.opts).restore(),KEY);
+  assert.equal(f.doc.cookie,cookie); assert.deepEqual(f.writes,writes); assert.deepEqual([...f.sessionValues],session);
+});
+
+test('conflicting cookies receive cleanup guidance without disclosing or removing copies', async () => {
+  const {Vault} = setup(); const f = browserFixture(); await new Vault(f.opts).save(KEY);
+  const cookie = f.doc.cookie;
+  f.keys.delete('https://c933103.github.io/molt/|ciphertext'); f.sessionValues.clear();
+  f.setCookie(cookie + '; ' + cookie);
+  await rejectsRestoreWithoutChangingCopies(Vault,f,/Conflicting saved credential cookies.*Forget saved key.*clear this site's cookies and storage/);
+  await assert.rejects(new Vault(f.opts).restore(),err => {
+    assert.doesNotMatch(err.message,/storage is unavailable|Reload to retry/);
+    return true;
+  });
+});
+
+test('conflicting cookies do not override an existing backup or session token', async () => {
+  const {Vault} = setup(); const f = browserFixture(); await new Vault(f.opts).save(KEY);
+  const cookie = f.doc.cookie; f.setCookie(cookie + '; ' + cookie);
+  assert.equal(await new Vault(f.opts).restore(),KEY);
+  f.keys.delete('https://c933103.github.io/molt/|ciphertext');
+  assert.equal(await new Vault(f.opts).restore(),KEY);
+  assert.equal(f.doc.cookie,cookie + '; ' + cookie);
+});
+
+test('restore distinguishes missing and invalid wrapping keys while retaining every copy', async t => {
+  const scope = 'https://c933103.github.io/molt/';
+  for (const invalid of [false,true]) await t.test(invalid ? 'invalid key' : 'missing key',async () => {
+    const {Vault} = setup(); const f = browserFixture(); await new Vault(f.opts).save(KEY);
+    if (invalid) f.keys.set(scope,{extractable:true}); else f.keys.delete(scope);
+    await rejectsRestoreWithoutChangingCopies(Vault,f,invalid ? /encryption key is invalid/ : /encryption key is missing/);
+  });
+});
+
+test('restore distinguishes malformed records, decryption failures and invalid ZIP contents', async t => {
+  const scope = 'https://c933103.github.io/molt/';
+  for (const stage of ['record','decryption','contents']) await t.test(stage,async () => {
+    let calls = 0;
+    const {Vault} = setup(() => { calls++; throw new Error('Unexpected network request'); });
+    const f = browserFixture(); await new Vault(f.opts).save(KEY);
+    if (stage === 'record') f.keys.set(scope + '|ciphertext','invalid-envelope-' + KEY);
+    if (stage === 'decryption') {
+      f.opts.crypto = {subtle:{decrypt() { throw new Error(KEY + f.keys.get(scope + '|ciphertext')); }}};
+    }
+    if (stage === 'contents') {
+      const iv = webcrypto.getRandomValues(new Uint8Array(12));
+      const ciphertext = await webcrypto.subtle.encrypt({name:'AES-GCM',iv,additionalData:new TextEncoder().encode('Moltbook browser desk v2|' + scope),tagLength:128},f.keys.get(scope),new Uint8Array(200));
+      f.keys.set(scope + '|ciphertext','v2.' + Buffer.concat([Buffer.from(iv),Buffer.from(ciphertext)]).toString('base64url'));
+    }
+    const expected = {record:/encrypted record is invalid/,decryption:/decryption failed/,contents:/decrypted contents failed validation/}[stage];
+    await rejectsRestoreWithoutChangingCopies(Vault,f,expected);
+    assert.equal(calls,0);
+  });
+});
+
+test('legacy migration failure is reported without renewing or removing the saved copies', async () => {
+  const {Vault} = setup(); const f = browserFixture(); const scope = 'https://c933103.github.io/molt/';
+  const key = await webcrypto.subtle.generateKey({name:'AES-GCM',length:256},false,['encrypt','decrypt']);
+  const iv = webcrypto.getRandomValues(new Uint8Array(12));
+  const ciphertext = await webcrypto.subtle.encrypt({name:'AES-GCM',iv,additionalData:new TextEncoder().encode('Moltbook browser desk v1|' + scope),tagLength:128},key,new TextEncoder().encode(JSON.stringify({key:KEY})));
+  const token = 'v1.' + Buffer.concat([Buffer.from(iv),Buffer.from(ciphertext)]).toString('base64url');
+  f.keys.set(scope,key); f.keys.set(scope + '|ciphertext',token); f.setCookie('__Secure-moltbook-desk-v1=' + token);
+  f.opts.crypto = {
+    getRandomValues:bytes => webcrypto.getRandomValues(bytes),
+    subtle:{decrypt:(...args) => webcrypto.subtle.decrypt(...args), encrypt() { throw new Error(KEY + token); }}
+  };
+  await rejectsRestoreWithoutChangingCopies(Vault,f,/storage upgrade could not be completed/);
+});
+
+test('a transient storage failure can be retried with the existing saved copies', async () => {
+  const {Vault} = setup(); const f = browserFixture(); await new Vault(f.opts).save(KEY);
+  const working = f.opts.indexedDB; let blocked = true;
+  f.opts.indexedDB = {open(...args) { if (blocked) throw new Error(KEY); return working.open(...args); }};
+  const vault = new Vault(f.opts);
+  await rejectsRestoreWithoutChangingCopies(Vault,f,/Browser credential storage is unavailable/);
+  await assert.rejects(vault.restore(),/Browser credential storage is unavailable/);
+  blocked = false;
+  assert.equal(await vault.restore(),KEY);
+});
+
+test('disconnect still cancels a pending restore instead of surfacing a stale diagnostic', async () => {
+  const {Vault} = setup(); const f = browserFixture(); await new Vault(f.opts).save(KEY);
+  const working = f.opts.indexedDB; let failedOpen, pendingOpen = true;
+  f.opts.indexedDB = {open(...args) {
+    if (!pendingOpen) return working.open(...args);
+    pendingOpen = false; failedOpen = {}; return failedOpen;
+  }};
+  const vault = new Vault(f.opts); const restoring = vault.restore();
+  await new Promise(resolve => setImmediate(resolve));
+  const forgetting = vault.forget(); failedOpen.onerror();
+  assert.equal(await restoring,null); await forgetting;
+  assert.equal(f.keys.size,0); assert.equal(f.doc.cookie,''); assert.equal(f.sessionValues.size,0);
+});
+
 test('external recovery archive restores authentication after every browser-stored copy is removed', async () => {
   let authorization;
   const {Vault,Zip,session} = setup(async (_,opts) => { authorization=opts.headers.Authorization; return response(); });
@@ -353,3 +511,4 @@ test('external recovery archive restores authentication after every browser-stor
   assert.equal(await new Vault(f.opts).restore(),KEY);
   assert.equal(JSON.stringify(session).includes(KEY),false);
 });
+
