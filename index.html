@@ -4,7 +4,7 @@
   <meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="referrer" content="no-referrer">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-8Y4Psub7TmJ15+dbwYC4bkokCpstuNT8UbF/ICPFqIQ='; style-src 'none'; connect-src https://www.moltbook.com; base-uri 'none'; form-action 'none'; object-src 'none'">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-sxrSvYi2n0183Te25wYM1Mzc3M7X86KrXOTEUPEbkEw='; style-src 'none'; connect-src https://www.moltbook.com; base-uri 'none'; form-action 'none'; object-src 'none'">
   <title>Moltbook browser desk</title>
 </head>
 <body>
@@ -239,7 +239,12 @@ class CredentialVault {
   }
   #expire() { this.#doc.cookie = '__Secure-moltbook-desk-v1=; Path=' + this.#path + '; Max-Age=0; Secure; SameSite=Strict'; }
   #tabName() { return 'moltbook-browser-desk-v1|' + this.#scope; }
-  #tabToken() { try { return this.#tab?.getItem(this.#tabName()) || ''; } catch { return ''; } }
+  #tabToken(reportFailure = false) {
+    try {
+      if (reportFailure && !this.#tab) throw new Error('Session storage unavailable');
+      return this.#tab?.getItem(this.#tabName()) || '';
+    } catch (err) { if (reportFailure) throw err; return ''; }
+  }
   #cache(token) { try { this.#tab?.setItem(this.#tabName(),token); } catch { /* Cookie and IndexedDB remain available. */ } }
   #open() {
     if (!this.#idb || !this.#crypto?.subtle) return Promise.reject(new ClientError('This browser cannot save the credential securely.'));
@@ -323,7 +328,15 @@ class CredentialVault {
         }
         const {key, token:backup} = await this.#stored('readonly');
         if (generation !== this.#generation) return null;
-        let token = backup || this.#tabToken() || this.#cookie(); if (!token) return null;
+        let token = backup;
+        if (!token) {
+          let sessionUnavailable = false;
+          try { token = this.#tabToken(true); } catch { sessionUnavailable = true; }
+          // A readable cookie remains a valid fallback when the session cache is blocked.
+          token ||= this.#cookie();
+          if (!token && sessionUnavailable) throw new Error('Session storage unavailable');
+        }
+        if (!token) return null;
         failure = 'The saved credential could not be restored because its encrypted record is invalid. Saved copies were not removed.';
         if (!/^v[12]\.[A-Za-z0-9_-]{40,1600}$/.test(token)) throw new Error('Invalid envelope');
         const version = Number(token[1]);

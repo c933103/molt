@@ -385,6 +385,28 @@ async function rejectsRestoreWithoutChangingCopies(Vault,f,pattern) {
   assert.equal(f.doc.cookie,cookie); assert.deepEqual(f.writes,writes);
 }
 
+test('unreadable session storage is not treated as absent when no other token can be read', async t => {
+  for (const missing of [false,true]) await t.test(missing ? 'unavailable session API' : 'denied session read',async () => {
+    const {Vault} = setup(); const f = browserFixture(); await new Vault(f.opts).save(KEY);
+    f.keys.delete('https://c933103.github.io/molt/|ciphertext'); f.setCookie('');
+    f.opts.sessionStorage = missing ? null : {
+      getItem() { throw new Error(KEY); },
+      setItem() { throw new Error(KEY); },
+      removeItem() { throw new Error(KEY); }
+    };
+    await rejectsRestoreWithoutChangingCopies(Vault,f,/Browser credential storage is unavailable/);
+  });
+});
+
+test('unreadable session storage still allows the existing cookie fallback', async () => {
+  const {Vault} = setup(); const f = browserFixture(); await new Vault(f.opts).save(KEY);
+  f.keys.delete('https://c933103.github.io/molt/|ciphertext');
+  const cookie = f.doc.cookie, writes = [...f.writes], session = [...f.sessionValues];
+  f.opts.sessionStorage = {getItem() { throw new Error(KEY); },setItem() { throw new Error(KEY); }};
+  assert.equal(await new Vault(f.opts).restore(),KEY);
+  assert.equal(f.doc.cookie,cookie); assert.deepEqual(f.writes,writes); assert.deepEqual([...f.sessionValues],session);
+});
+
 test('restore distinguishes missing and invalid wrapping keys while retaining every copy', async t => {
   const scope = 'https://c933103.github.io/molt/';
   for (const invalid of [false,true]) await t.test(invalid ? 'invalid key' : 'missing key',async () => {
