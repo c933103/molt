@@ -4,7 +4,7 @@
   <meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="referrer" content="no-referrer">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-sxrSvYi2n0183Te25wYM1Mzc3M7X86KrXOTEUPEbkEw='; style-src 'none'; connect-src https://www.moltbook.com; base-uri 'none'; form-action 'none'; object-src 'none'">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-dKsDePj0bWb2y+l2g/6O6aoD4MzXu6hJ/FjH6242HJM='; style-src 'none'; connect-src https://www.moltbook.com; base-uri 'none'; form-action 'none'; object-src 'none'">
   <title>Moltbook browser desk</title>
 </head>
 <body>
@@ -149,6 +149,9 @@ const MUTATIONS = new Set(['createPost', 'comment', 'upvote', 'downvote', 'verif
 class ClientError extends Error {
   constructor(message, unknownOutcome = false) { super(message); this.name = 'ClientError'; this.unknownOutcome = unknownOutcome; }
 }
+class CredentialConflictError extends ClientError {
+  constructor() { super('Conflicting saved credentials. Disconnect and connect again.'); }
+}
 const KEY_PATTERN = /^[A-Za-z0-9_-]{16,512}$/;
 const COOKIE_AGE = 400 * 24 * 60 * 60;
 // Single-entry, stored-method ZIP with traditional PKWARE password encryption.
@@ -234,7 +237,7 @@ class CredentialVault {
   }
   #cookie() {
     const matches = this.#doc.cookie.split(';').map(c => c.trim()).filter(c => c.startsWith('__Secure-moltbook-desk-v1='));
-    if (matches.length > 1) throw new ClientError('Conflicting saved credentials. Disconnect and connect again.');
+    if (matches.length > 1) throw new CredentialConflictError();
     return matches.length ? matches[0].slice('__Secure-moltbook-desk-v1='.length) : '';
   }
   #expire() { this.#doc.cookie = '__Secure-moltbook-desk-v1=; Path=' + this.#path + '; Max-Age=0; Secure; SameSite=Strict'; }
@@ -363,9 +366,10 @@ class CredentialVault {
         }
         this.#cache(token);
         return value;
-      } catch {
+      } catch (err) {
         if (generation !== this.#generation) return null;
         // Retain every existing copy, including on transient storage failures.
+        if (err instanceof CredentialConflictError) failure = 'Conflicting saved credential cookies were found. Saved copies were not removed. Use Forget saved key to disconnect; if copies remain, clear this site\'s cookies and storage before connecting again.';
         throw new ClientError(failure);
       }
     });

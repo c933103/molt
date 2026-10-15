@@ -407,6 +407,27 @@ test('unreadable session storage still allows the existing cookie fallback', asy
   assert.equal(f.doc.cookie,cookie); assert.deepEqual(f.writes,writes); assert.deepEqual([...f.sessionValues],session);
 });
 
+test('conflicting cookies receive cleanup guidance without disclosing or removing copies', async () => {
+  const {Vault} = setup(); const f = browserFixture(); await new Vault(f.opts).save(KEY);
+  const cookie = f.doc.cookie;
+  f.keys.delete('https://c933103.github.io/molt/|ciphertext'); f.sessionValues.clear();
+  f.setCookie(cookie + '; ' + cookie);
+  await rejectsRestoreWithoutChangingCopies(Vault,f,/Conflicting saved credential cookies.*Forget saved key.*clear this site's cookies and storage/);
+  await assert.rejects(new Vault(f.opts).restore(),err => {
+    assert.doesNotMatch(err.message,/storage is unavailable|Reload to retry/);
+    return true;
+  });
+});
+
+test('conflicting cookies do not override an existing backup or session token', async () => {
+  const {Vault} = setup(); const f = browserFixture(); await new Vault(f.opts).save(KEY);
+  const cookie = f.doc.cookie; f.setCookie(cookie + '; ' + cookie);
+  assert.equal(await new Vault(f.opts).restore(),KEY);
+  f.keys.delete('https://c933103.github.io/molt/|ciphertext');
+  assert.equal(await new Vault(f.opts).restore(),KEY);
+  assert.equal(f.doc.cookie,cookie + '; ' + cookie);
+});
+
 test('restore distinguishes missing and invalid wrapping keys while retaining every copy', async t => {
   const scope = 'https://c933103.github.io/molt/';
   for (const invalid of [false,true]) await t.test(invalid ? 'invalid key' : 'missing key',async () => {
