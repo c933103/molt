@@ -4,7 +4,7 @@
   <meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="referrer" content="no-referrer">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-dKsDePj0bWb2y+l2g/6O6aoD4MzXu6hJ/FjH6242HJM='; style-src 'none'; connect-src https://www.moltbook.com; base-uri 'none'; form-action 'none'; object-src 'none'">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-lw2ST60NXNPmDfintM/DYhMN8+C7f7XpaDRr7ab1z4w='; style-src 'none'; connect-src https://www.moltbook.com; base-uri 'none'; form-action 'none'; object-src 'none'">
   <title>Moltbook browser desk</title>
 </head>
 <body>
@@ -24,6 +24,8 @@
 <div id="recovery-panel">
   <h2>Recovery file outside the browser</h2>
   <p><button id="recovery-download" type="button" disabled>Download recovery ZIP</button></p>
+  <p>After a successful Connect, this page automatically requests a recovery ZIP download. Reloading a saved connection or restoring from a ZIP does not start another download.</p>
+  <p id="recovery-status">If the automatic download does not appear, use Download recovery ZIP to try again. The page cannot confirm that your browser saved the file.</p>
   <p>Save moltbook-recovery.zip on your device or other storage. It contains api-key.txt and opens with password 123. This file restores your connection even after all browser data is lost. Anyone with the file and password can recover the API key. Disconnect cannot delete copies you downloaded.</p>
   <p><label for="recovery-file">Choose a previously downloaded recovery ZIP</label><br>
   <input id="recovery-file" type="file">
@@ -599,7 +601,7 @@ function action(group, control, handler) {
   });
 }
 ['browse','compose','reply','delete','verify','account'].forEach(name => $('view-' + name).addEventListener('click', () => view(name)));
-async function connectKey(key, generation) {
+async function connectKey(key, generation, downloadRecovery = false) {
   if (generation !== connectionGeneration) return;
   try { session.connect(key); } catch (err) { notice(err.message, 'error'); return; }
   connectionBusy = true; sync();
@@ -610,41 +612,55 @@ async function connectKey(key, generation) {
     try {
       if (!vault) throw new ClientError('This browser cannot save the credential securely.');
       const saved = await vault.save(key);
-      if (generation === connectionGeneration && saved) notice('Connected. This browser restores automatically. Use Download recovery ZIP to save an external recovery file.', 'success');
+      if (generation === connectionGeneration && saved) notice('Connected. This browser restores automatically.', 'success');
     } catch (err) {
       if (generation === connectionGeneration) notice('Connected for this tab only. ' + (err instanceof ClientError ? err.message : 'The encrypted credential could not be saved.'), 'error');
     }
+    if (downloadRecovery && generation === connectionGeneration && session.connected) requestRecoveryDownload();
   } finally { if (generation === connectionGeneration) { connectionBusy = false; sync(); } }
 }
 action('connect-form', 'connect-button', async () => {
   if (connectionBusy || session.busy) return;
   const generation = ++connectionGeneration;
   const input = $('api-key'); const key = input.value.trim(); input.value = '';
-  await connectKey(key,generation);
+  resetRecoveryDownload();
+  await connectKey(key,generation,true);
 });
 function revokeRecoveryDownload() {
   if (recoveryDownloadUrl) { URL.revokeObjectURL(recoveryDownloadUrl); recoveryDownloadUrl = null; }
 }
-// Export is an explicit browser control; the CLI has no credential-export action.
-$('recovery-download').addEventListener('click', () => {
-  if (connectionBusy || session.busy) return;
-  let archive;
+function resetRecoveryDownload() {
+  revokeRecoveryDownload();
+  $('recovery-download').textContent = 'Download recovery ZIP';
+  $('recovery-status').textContent = '';
+}
+// Only explicit Connect and the download button export; restore and CLI calls do not.
+function requestRecoveryDownload() {
+  let archive, link;
   try {
     archive = session.recoveryArchive(crypto);
     revokeRecoveryDownload();
     recoveryDownloadUrl = URL.createObjectURL(new Blob([archive],{type:'application/zip'}));
-    const link = document.createElement('a'); link.href = recoveryDownloadUrl; link.type = 'application/zip';
+    link = document.createElement('a'); link.href = recoveryDownloadUrl; link.type = 'application/zip';
     // Modern download support enhances the valid HTML 4.0 source markup.
-    link.download = 'moltbook-recovery.zip'; document.body.append(link); link.click(); link.remove();
-    notice('Recovery ZIP download requested. Save the file outside this browser. ZIP password: 123.');
-  } catch { revokeRecoveryDownload(); notice('The recovery ZIP could not be downloaded. Check this browser’s download support.'); }
-  finally { if (archive) archive.fill(0); }
+    link.download = 'moltbook-recovery.zip'; document.body.append(link); link.click();
+    $('recovery-download').textContent = 'Download recovery ZIP again';
+    $('recovery-status').textContent = 'Recovery ZIP download requested. The page cannot confirm that your browser saved it. Save the file outside this browser. ZIP password: 123. If no download appeared, use Download recovery ZIP again.';
+  } catch {
+    revokeRecoveryDownload();
+    $('recovery-download').textContent = 'Retry recovery ZIP download';
+    $('recovery-status').textContent = 'The recovery ZIP download could not be requested. Your connection is still available. Use Retry recovery ZIP download and check this browser’s download support.';
+  } finally { if (link) link.remove(); if (archive) archive.fill(0); }
+}
+$('recovery-download').addEventListener('click', () => {
+  if (connectionBusy || session.busy || !session.connected) return;
+  requestRecoveryDownload();
 });
 $('recovery-import').addEventListener('click', async () => {
   if (connectionBusy || session.busy) return;
   const input = $('recovery-file'), file = input.files?.[0];
   if (!file || !Number.isInteger(file.size) || file.size < 140 || file.size > 700) { input.value = ''; notice('Choose a recovery ZIP downloaded by this page (up to 700 bytes).'); return; }
-  const generation = ++connectionGeneration; connectionBusy = true; sync();
+  const generation = ++connectionGeneration; connectionBusy = true; resetRecoveryDownload(); sync();
   let archive;
   try {
     archive = new Uint8Array(await file.arrayBuffer());
@@ -660,7 +676,7 @@ $('recovery-import').addEventListener('click', async () => {
 });
 $('disconnect').addEventListener('click', async () => {
   const generation = ++connectionGeneration; session.disconnect(); connectionBusy = true;
-  revokeRecoveryDownload(); $('recovery-file').value = '';
+  resetRecoveryDownload(); $('recovery-file').value = '';
   $('api-key').value = ''; next = null; $('next-page').disabled = true; $('results').replaceChildren(node('p', 'Disconnected.')); $('raw-response').textContent = 'None'; $('verification-code').value = ''; $('challenge').textContent = 'No publishing challenge has been returned.';
   notice('Disconnected. Removing the saved credential…'); sync();
   try { if (vault) await vault.forget(); if (generation === connectionGeneration) notice('Disconnected. The saved cookie, session copy, browser backup and decryption key have been removed.'); }

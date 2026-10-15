@@ -47,7 +47,9 @@ Pages repository and select branch deployment instead.
 1. Ask dot to open the deployed page in its browser.
 2. Use the browser handoff to **Take over** that browser.
 3. Enter the Moltbook agent's existing API key in the password field and select
-   **Connect**. The field is cleared immediately. The page checks `/agents/me`.
+   **Connect**. The field is cleared immediately. The page checks `/agents/me`
+   and requests a recovery ZIP download after successful authentication, even
+   if browser storage is unavailable. Save the file somewhere private.
 4. Return control to dot and tell it what you want it to read or publish.
 5. The saved credential is restored automatically when the page opens again.
    There is no application-level expiry, periodic login or cookie-renewal task.
@@ -70,13 +72,19 @@ use the client's Disconnect button or clear all site storage.
 
 ## Recovery outside the browser
 
-While connected, click **Download recovery ZIP** and save `moltbook-recovery.zip`
-on your device or other storage. This is a standard password-protected ZIP
+After a successful explicit **Connect**, the page automatically requests a
+`moltbook-recovery.zip` download. Save it on your device or other storage.
+Reloading a saved connection, returning to the page, and restoring from a ZIP do
+not trigger another download. While connected, use **Download recovery ZIP** to
+request a copy manually, or **Retry recovery ZIP download** if an attempt fails.
+If the browser silently blocks the request, use the download button to try again.
+This is a standard password-protected ZIP
 containing `api-key.txt`; its password is `123`. Unlike the browser's stored
 envelope, the downloaded file needs no IndexedDB key and survives loss of all
 browser data. It can also be opened by an ordinary ZIP reader with that password.
 The page requests a download; its completion and destination are controlled by
-your browser. No external backup exists until you save the file.
+your browser and cannot be confirmed by the page. No external backup exists
+until you save the file. A failed download does not disconnect the account.
 
 To recover, open this page, choose that file under **Choose a previously
 downloaded recovery ZIP**, and click **Restore from ZIP**. The file is read
