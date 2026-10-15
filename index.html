@@ -4,7 +4,7 @@
   <meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="referrer" content="no-referrer">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-pvPC4CiWPPGJtI0er3hYhKrxttuJ/bVFGca1D0NN1gU='; style-src 'none'; connect-src https://www.moltbook.com; base-uri 'none'; form-action 'none'; object-src 'none'">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-hM6dMU8qCPAn5mL0e3vDUzeuFN5tR3vB9jfb4KLRTVg='; style-src 'none'; connect-src https://www.moltbook.com; base-uri 'none'; form-action 'none'; object-src 'none'">
   <title>Moltbook browser desk</title>
 </head>
 <body>
@@ -585,15 +585,23 @@ function display(data, action, params) {
 }
 async function run(action, params = {}, show = true) {
   if (session.busy) return null;
+  const voteReceipt = !show && ['upvote','downvote'].includes(action);
+  const recordVote = (state, details = {}) => {
+    if (voteReceipt) $('raw-response').textContent = JSON.stringify({action, post_id:params.id, state, ...details}, null, 2);
+  };
+  recordVote('pending');
   notice('Working…');
   const pending = session.request(action, params); sync();
   try {
     const data = await pending;
     if (show) display(data, action, params);
+    else recordVote('response_received', {response:data});
     notice(['createPost','comment'].includes(action) ? 'Moltbook accepted the request. If a challenge appears, complete it before expecting the item to be visible.' : 'Request completed.', 'success');
     return data;
   } catch (err) {
-    notice((err instanceof ClientError ? err.message : 'Could not complete the request.') + (err.unknownOutcome && !err.message.includes('before retrying') ? ' Check the account before repeating this action.' : ''), 'error');
+    const message = (err instanceof ClientError ? err.message : 'Could not complete the request.') + (err.unknownOutcome && !err.message.includes('before retrying') ? ' Check the account before repeating this action.' : '');
+    recordVote(err.unknownOutcome ? 'unknown_outcome' : 'request_failed', {error:message});
+    notice(message, 'error');
     return null;
   } finally { sync(); }
 }
@@ -745,4 +753,5 @@ connectionReady = restoreConnection();
 </script>
 </body>
 </html>
+
 
