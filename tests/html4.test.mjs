@@ -14,8 +14,18 @@ test('HTML 4.0 markup has valid controls and labels and no CSS or HTML5 attribut
   assert.doesNotMatch(html, /<form\b/); // Password fields cannot fall back to native HTTP submission.
 });
 test('startup displays sanitized storage and crypto diagnostics without connecting or requesting', async t => {
-  for (const missingCrypto of [false,true]) await t.test(missingCrypto ? 'Web Crypto unavailable' : 'IndexedDB blocked',async () => {
-    const elements = new Map(); let requests = 0;
+  const cases = [
+    ['IndexedDB open blocked', 'indexedDB', 'blocked'],
+    ['IndexedDB global absent', 'indexedDB', 'absent'],
+    ['IndexedDB global null', 'indexedDB', 'null'],
+    ['IndexedDB global getter throws', 'indexedDB', 'throws'],
+    ['Web Crypto unavailable', 'crypto', 'blocked'],
+    ['Web Crypto global absent', 'crypto', 'absent'],
+    ['Web Crypto global null', 'crypto', 'null'],
+    ['Web Crypto global getter throws', 'crypto', 'throws']
+  ];
+  for (const [name, capability, mode] of cases) await t.test(name,async () => {
+    const elements = new Map(); let requests = 0, storageAccesses = 0;
     class Element {
       constructor(tag,id='') { this.tagName=tag.toUpperCase(); this.id=id; this.value=''; this.disabled=false; this.textContent=''; }
       addEventListener() {}
@@ -24,26 +34,32 @@ test('startup displays sanitized storage and crypto diagnostics without connecti
     const document = {
       getElementById:id => elements.get(id),
       querySelectorAll:() => [...elements.values()].filter(e => e.tagName==='BUTTON'),
-      get cookie() { return ''; }
+      get cookie() { storageAccesses++; return ''; },
+      set cookie(_) { storageAccesses++; }
     };
     const window = {addEventListener() {}};
     const marker = 'synthetic_exception_content_never_show';
     const context = {
       document,window,URL,URLSearchParams,AbortController,TextDecoder,TextEncoder,Uint8Array,Blob,
-      crypto:missingCrypto ? {} : webcrypto,
+      crypto:capability === 'crypto' ? {} : webcrypto,
       indexedDB:{open() { throw new Error(marker); }},
-      location:{href:'https://c933103.github.io/molt/'},sessionStorage:{getItem() { return null; }},
+      location:{href:'https://c933103.github.io/molt/'},sessionStorage:{getItem() { storageAccesses++; return null; },setItem() { storageAccesses++; },removeItem() { storageAccesses++; }},
       btoa,atob,setTimeout,clearTimeout,
       fetch() { requests++; throw new Error('Unexpected network request'); }
     };
+    if (mode === 'absent') delete context[capability];
+    if (mode === 'null') context[capability] = null;
+    if (mode === 'throws') Object.defineProperty(context,capability,{get() { throw new Error(marker); }});
     vm.runInNewContext(script,context);
     const result = await window.moltbookDesk.execute('connection');
     assert.equal(result.data.connected,false); assert.equal(requests,0);
     assert.equal(elements.get('connection').textContent,'Not connected');
     const message = elements.get('status').textContent;
-    assert.match(message,missingCrypto ? /Web Crypto is unavailable/ : /Browser credential storage is unavailable/);
+    assert.match(message,capability === 'crypto' ? /Web Crypto is unavailable/ : /Browser credential storage is unavailable/);
     assert.match(message,/Saved connection status could not be checked/);
+    assert.match(message,/saved copies were not removed/i);
     assert.equal(message.includes(marker),false);
+    assert.equal(storageAccesses,0);
     assert.equal(elements.get('connect-button').disabled,false);
   });
 });

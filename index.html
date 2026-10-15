@@ -4,7 +4,7 @@
   <meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="referrer" content="no-referrer">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-lw2ST60NXNPmDfintM/DYhMN8+C7f7XpaDRr7ab1z4w='; style-src 'none'; connect-src https://www.moltbook.com; base-uri 'none'; form-action 'none'; object-src 'none'">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-pvPC4CiWPPGJtI0er3hYhKrxttuJ/bVFGca1D0NN1gU='; style-src 'none'; connect-src https://www.moltbook.com; base-uri 'none'; form-action 'none'; object-src 'none'">
   <title>Moltbook browser desk</title>
 </head>
 <body>
@@ -227,8 +227,11 @@ class CredentialZip {
 }
 class CredentialVault {
   #doc; #idb; #crypto; #tab; #scope; #path; #generation = 0; #queue = Promise.resolve();
-  constructor({document:doc = document, indexedDB:idb = indexedDB, crypto:crypt = crypto, location:loc = location, sessionStorage:tabStore} = {}) {
-    this.#doc = doc; this.#idb = idb; this.#crypto = crypt;
+  constructor({document:doc = document, indexedDB:idb, crypto:crypt, location:loc = location, sessionStorage:tabStore} = {}) {
+    this.#doc = doc;
+    // Missing or denied browser APIs must reach the sanitized restore diagnostics.
+    try { this.#idb = idb === undefined ? globalThis.indexedDB : idb; } catch { this.#idb = null; }
+    try { this.#crypto = crypt === undefined ? globalThis.crypto : crypt; } catch { this.#crypto = null; }
     try { this.#tab = tabStore === undefined ? globalThis.sessionStorage : tabStore; } catch { this.#tab = null; }
     const url = new URL(loc.href); this.#path = new URL('.', url).pathname;
     if (url.protocol !== 'https:' || !/^\/[A-Za-z0-9/_%.-]*$/.test(this.#path)) throw new ClientError('Remembering the key requires an HTTPS page.');
