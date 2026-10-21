@@ -4,7 +4,7 @@
   <meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="referrer" content="no-referrer">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-hM6dMU8qCPAn5mL0e3vDUzeuFN5tR3vB9jfb4KLRTVg='; style-src 'none'; connect-src https://www.moltbook.com; base-uri 'none'; form-action 'none'; object-src 'none'">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-duBEJYG697a+VFcVW3zWcKD0FWWVsW7ASRdGPwXna0A='; style-src 'none'; connect-src https://www.moltbook.com; base-uri 'none'; form-action 'none'; object-src 'none'">
   <title>Moltbook browser desk</title>
 </head>
 <body>
@@ -147,7 +147,7 @@ node cli.mjs posts --sort new</pre>
 const API_ORIGIN = 'https://www.moltbook.com';
 const API_BASE = API_ORIGIN + '/api/v1';
 const RESPONSE_LIMIT = 2 * 1024 * 1024;
-const MUTATIONS = new Set(['createPost', 'comment', 'upvote', 'downvote', 'verify', 'deletePost']);
+const MUTATIONS = new Set(['createPost', 'comment', 'upvote', 'downvote', 'commentUpvote', 'verify', 'deletePost']);
 class ClientError extends Error {
   constructor(message, unknownOutcome = false) { super(message); this.name = 'ClientError'; this.unknownOutcome = unknownOutcome; }
 }
@@ -424,9 +424,10 @@ function operation(action, p = {}) {
       path = '/posts/' + checkedId(p.id); method = 'DELETE';
       if (p.confirm_id !== p.id) throw new ClientError('Confirm deletion by entering the same post ID twice.');
       break;
-    case 'comments':
+    case 'comments': case 'commentReadback':
       path = '/posts/' + checkedId(p.id) + '/comments'; query.set('sort', 'new'); query.set('limit', '35');
       if (p.cursor) query.set('cursor', checkedText(p.cursor, 'cursor', 4096));
+      if (p.requester_id !== undefined) query.set('requester_id', checkedId(p.requester_id));
       break;
     case 'createPost':
       path = '/posts'; method = 'POST';
@@ -438,6 +439,10 @@ function operation(action, p = {}) {
       if (p.parent_id) body.parent_id = checkedId(p.parent_id);
       break;
     case 'upvote': case 'downvote': path = '/posts/' + checkedId(p.id) + '/' + action; method = 'POST'; break;
+    case 'commentUpvote':
+      path = '/comments/' + checkedId(p.id) + '/upvote'; method = 'POST';
+      if (p.post_id !== undefined) checkedId(p.post_id); // Receipt context only, never the vote target.
+      break;
     case 'verify':
       path = '/verify'; method = 'POST';
       if (typeof p.answer !== 'string' || !/^-?\d+\.\d{2}$/.test(p.answer) || p.answer.length > 32) throw new ClientError('Use an answer with two decimal places.');
@@ -450,7 +455,7 @@ function operation(action, p = {}) {
   return {url:url.href, method, body};
 }
 class MoltbookSession {
-  #key = ''; #busy = false; #controller = null; #epoch = 0;
+  #key = ''; #busy = false; #controller = null; #epoch = 0; #commentVotes = new Set();
   connect(value) {
     if (typeof value !== 'string' || !KEY_PATTERN.test(value)) throw new ClientError('Enter the API key itself, without a Bearer prefix.');
     if (this.#busy) throw new ClientError('Wait for the current request before connecting.');
@@ -458,6 +463,7 @@ class MoltbookSession {
   }
   get connected() { return Boolean(this.#key); }
   get busy() { return this.#busy; }
+  commentVoteAttempted(id) { return this.#commentVotes.has(id); }
   disconnect() { this.#key = ''; this.#epoch++; if (this.#controller) this.#controller.abort(); }
   recoveryArchive(crypt) {
     if (!this.connected) throw new ClientError('Connect this browser before downloading a recovery ZIP.');
@@ -478,13 +484,35 @@ class MoltbookSession {
   async request(action, params = {}) {
     if (!this.connected) throw new ClientError('Connect this browser first.');
     if (this.#busy) throw new ClientError('A request is already running.');
+    if (['comments','commentReadback'].includes(action) && params.requester_id !== undefined) throw new ClientError('Use commentReadback to read vote data for the connected account. A requester ID cannot be supplied.');
     const op = operation(action, params);
     if (op.url.includes(this.#key) || (op.body && JSON.stringify(op.body).includes(this.#key))) throw new ClientError('A request cannot include the API key in its URL or content.');
+    if (action === 'commentUpvote' && this.commentVoteAttempted(params.id)) throw new ClientError('This comment vote was already attempted in this page. Read back the account data before considering any further action; repeat-vote behavior is undocumented.');
     this.#busy = true;
     const controller = new AbortController(); this.#controller = controller;
-    const epoch = this.#epoch; let receivedResponse = false;
+    const epoch = this.#epoch;
     const timeout = setTimeout(() => controller.abort(), 20000);
+    if (action === 'commentUpvote') this.#commentVotes.add(params.id);
     try {
+      if (action === 'commentReadback') {
+        const identity = await this.#send('me', {}, operation('me'), controller, epoch);
+        const id = identity?.agent?.id;
+        if (typeof id !== 'string' || !/^[A-Za-z0-9_-]{1,80}$/.test(id) || id.includes(this.#key)) throw new ClientError('The connected account public ID is unavailable. Its comment vote state remains unknown.');
+        const response = await this.#send('comments', params, operation('comments', {...params, requester_id:id}), controller, epoch);
+        return {type:'comment_vote_readback', post_id:params.id, requester_id:id, vote_state:'unknown', note:'Account-scoped response below. Vote-state fields and repeat-vote behavior are undocumented; counts do not establish your vote.', response};
+      }
+      return await this.#send(action, params, op, controller, epoch);
+    } catch (err) {
+      if (action === 'commentUpvote' && err instanceof ClientError && !err.unknownOutcome) this.#commentVotes.delete(params.id);
+      throw err;
+    } finally {
+      clearTimeout(timeout); this.#busy = false; this.#controller = null;
+    }
+  }
+  async #send(action, params, op, controller, epoch) {
+    let receivedResponse = false;
+    try {
+      if (epoch !== this.#epoch || controller.signal.aborted) throw new ClientError('Disconnected or timed out before the request was sent.');
       const headers = {'Authorization':'Bearer ' + this.#key, 'Accept':'application/json'};
       if (op.body) headers['Content-Type'] = 'application/json';
       const res = await fetch(op.url, {method:op.method, headers, ...(op.body ? {body:JSON.stringify(op.body)} : {}), mode:'cors', credentials:'omit', redirect:'error', cache:'no-store', referrerPolicy:'no-referrer', signal:controller.signal});
@@ -521,8 +549,6 @@ class MoltbookSession {
       if (err instanceof ClientError) throw err;
       const unknown = MUTATIONS.has(action);
       throw new ClientError((receivedResponse ? 'Could not finish reading the response.' : 'Request failed or timed out. Check the connection and browser CORS access.') + (unknown ? ' The action may have reached Moltbook. Check the account before retrying.' : ''), unknown);
-    } finally {
-      clearTimeout(timeout); this.#busy = false; this.#controller = null;
     }
   }
 }
@@ -545,8 +571,10 @@ function button(label, handler) { const b = node('button', label); b.type = 'but
 function replyTo(postId, parentId = '') { $('comment-post-id').value = postId; $('parent-id').value = parentId; view('reply'); $('comment-content').focus(); }
 function card(item, forcedPostId, depth = 0) {
   const el = node('div', '', 'card');
-  const postId = forcedPostId || item.post_id || item.post?.id || item.id;
-  const isComment = Boolean(forcedPostId || item.type === 'comment');
+  const isComment = forcedPostId !== undefined || item.type === 'comment';
+  const postId = forcedPostId || item.post_id || item.post?.id || (isComment ? undefined : item.id);
+  const validId = id => typeof id === 'string' && /^[A-Za-z0-9_-]{1,80}$/.test(id);
+  const readableComment = isComment && validId(item.id) && typeof item.content === 'string' && item.content.trim() && !/^\[(deleted|removed)\]$/i.test(item.content.trim()) && item.deleted !== true && item.is_deleted !== true && !item.deleted_at;
   el.append(node('h3', String(item.title || (isComment ? 'Comment' : 'Post'))));
   el.append(node('p', [item.submolt?.name ? 'm/' + item.submolt.name : '', item.author?.name || '', item.created_at || '', item.upvotes != null ? '▲ ' + item.upvotes : ''].filter(Boolean).join(' · '), 'meta'));
   const body = node('div', '', 'body');
@@ -556,25 +584,31 @@ function card(item, forcedPostId, depth = 0) {
   el.append(node('p', 'ID: ' + String(item.id || ''), 'id'));
   if (typeof item.url === 'string') el.append(node('p', 'Linked URL: ' + item.url, 'body'));
   const actions = node('div', '', 'actions');
-  if (typeof postId === 'string' && /^[A-Za-z0-9_-]{1,80}$/.test(postId)) {
-    actions.append(button('Open post', () => run('post', {id:postId})), button('Load comments', () => run('comments', {id:postId})), button(isComment ? 'Reply' : 'Comment', () => replyTo(postId, isComment ? item.id : '')));
+  if (validId(postId)) {
+    actions.append(button('Open post', () => run('post', {id:postId})), button('Load comments', () => run('comments', {id:postId})), button('Read account vote data', () => run('commentReadback', {id:postId})));
+    if (!isComment || readableComment) actions.append(button(isComment ? 'Reply' : 'Comment', () => replyTo(postId, isComment ? item.id : '')));
     if (!isComment) actions.append(button('Upvote', () => run('upvote', {id:postId}, false)), button('Downvote', () => run('downvote', {id:postId}, false)));
   }
+  if (isComment) {
+    el.append(node('p', 'Your comment vote state is unknown. Read account vote data before voting; aggregate counts do not establish your vote.'));
+    if (readableComment) actions.append(button('Upvote comment once', () => run('commentUpvote', {id:item.id, ...(validId(postId) ? {post_id:postId} : {})}, false)));
+  }
   el.append(actions);
-  if (Array.isArray(item.replies) && depth < 8) for (const child of item.replies.slice(0,100)) el.append(card(child, postId, depth + 1));
+  if (Array.isArray(item.replies) && depth < 8) for (const child of item.replies.slice(0,100)) if (child && typeof child === 'object') el.append(card(child, postId || null, depth + 1));
   return el;
 }
 function display(data, action, params) {
   $('raw-response').textContent = JSON.stringify(data, null, 2);
+  if (action === 'commentReadback') data = data.response;
   $('results-title').textContent = MUTATIONS.has(action) ? 'Action response' : 'Results';
   $('results').replaceChildren();
   const items = Array.isArray(data?.posts) ? data.posts : Array.isArray(data?.results) ? data.results : Array.isArray(data?.comments) ? data.comments : null;
   if (items) {
-    for (const item of items.slice(0,100)) if (item && typeof item === 'object') $('results').append(card(item, action === 'comments' ? params.id : undefined));
+    for (const item of items.slice(0,100)) if (item && typeof item === 'object') $('results').append(card(item, ['comments','commentReadback'].includes(action) ? params.id : undefined));
     if (!items.length) $('results').append(node('p', 'No items found.', 'muted'));
   } else if (data?.post && typeof data.post === 'object') $('results').append(card(data.post));
   else $('results').append(node('pre', JSON.stringify(data, null, 2)));
-  next = ['posts','feed','search','comments'].includes(action) && data?.has_more && typeof data.next_cursor === 'string' ? {action, params:{...params, cursor:data.next_cursor}} : null;
+  next = ['posts','feed','search','comments','commentReadback'].includes(action) && data?.has_more && typeof data.next_cursor === 'string' ? {action, params:{...params, cursor:data.next_cursor}} : null;
   $('next-page').disabled = !next;
   const challenge = data?.verification || data?.post?.verification || data?.comment?.verification;
   if (challenge && typeof challenge === 'object') {
@@ -583,24 +617,37 @@ function display(data, action, params) {
     $('answer').value = ''; view('verify');
   }
 }
+function voteTarget(action, params) {
+  const safeId = id => typeof id === 'string' && /^[A-Za-z0-9_-]{1,80}$/.test(id) ? session.scrub(id) : null;
+  return action === 'commentUpvote'
+    ? {type:'comment_vote', action, comment_id:safeId(params.id), ...(params.post_id !== undefined ? {post_id:safeId(params.post_id)} : {})}
+    : {action, post_id:safeId(params.id)};
+}
+function recordVote(target, state, details = {}) {
+  const receipt = {...target, state, ...details};
+  $('raw-response').textContent = JSON.stringify(receipt, null, 2);
+  return receipt;
+}
 async function run(action, params = {}, show = true) {
   if (session.busy) return null;
-  const voteReceipt = !show && ['upvote','downvote'].includes(action);
-  const recordVote = (state, details = {}) => {
-    if (voteReceipt) $('raw-response').textContent = JSON.stringify({action, post_id:params.id, state, ...details}, null, 2);
+  if (action === 'commentUpvote' && session.commentVoteAttempted(params.id)) { notice('This comment vote was already attempted in this page. Read account vote data; no repeat vote was sent.'); return null; }
+  const voteReceipt = !show && ['upvote','downvote','commentUpvote'].includes(action);
+  const target = voteReceipt ? voteTarget(action, params) : null;
+  const record = (state, details = {}) => {
+    if (voteReceipt) recordVote(target, state, details);
   };
-  recordVote('pending');
+  record('pending');
   notice('Working…');
   const pending = session.request(action, params); sync();
   try {
     const data = await pending;
     if (show) display(data, action, params);
-    else recordVote('response_received', {response:data});
+    else record('response_received', {response:data});
     notice(['createPost','comment'].includes(action) ? 'Moltbook accepted the request. If a challenge appears, complete it before expecting the item to be visible.' : 'Request completed.', 'success');
     return data;
   } catch (err) {
     const message = (err instanceof ClientError ? err.message : 'Could not complete the request.') + (err.unknownOutcome && !err.message.includes('before retrying') ? ' Check the account before repeating this action.' : '');
-    recordVote(err.unknownOutcome ? 'unknown_outcome' : 'request_failed', {error:message});
+    record(err.unknownOutcome ? 'unknown_outcome' : 'request_failed', {error:message});
     notice(message, 'error');
     return null;
   } finally { sync(); }
@@ -711,7 +758,7 @@ action('verify-form', 'verify-button', async () => { const data = await run('ver
 $('profile-button').addEventListener('click', () => run('me'));
 $('claim-button').addEventListener('click', () => run('status'));
 $('home-button').addEventListener('click', () => run('home'));
-$('next-page').addEventListener('click', () => { if (next) run(next.action, next.params); });
+$('next-page').addEventListener('click', () => next ? run(next.action, next.params) : null);
 async function restoreConnection() {
   if (!vault || session.connected || connectionBusy) { sync(); return; }
   const generation = ++connectionGeneration; connectionBusy = true; sync();
@@ -733,17 +780,23 @@ Object.defineProperty(window, 'moltbookDesk', {value:Object.freeze({
     await connectionReady;
     if (connectionBusy) return {ok:false, error:'The browser connection is being updated. Wait for it to finish.'};
     if (action === 'connection') return {ok:true, data:{connected:session.connected, busy:session.busy}};
+    // Comment mutations keep the surrounding view and expose the same typed receipt as the UI.
+    const target = action === 'commentUpvote' ? voteTarget(action, params) : null;
+    if (target && (session.busy || session.commentVoteAttempted(params.id))) return {ok:false, error:session.busy ? 'A request is already running.' : 'This comment vote was already attempted in this page. Read account vote data; no repeat vote was sent.', unknownOutcome:false};
+    if (target) recordVote(target, 'pending');
     try {
       const pending = session.request(action, params); sync();
       const data = await pending;
-      try { display(data, action, params); notice('CLI request completed.', 'success'); }
+      const receipt = target ? recordVote(target, 'response_received', {response:data}) : null;
+      try { if (!target) display(data, action, params); notice('CLI request completed.', 'success'); }
       catch { notice('The API request completed, but its browser display could not be updated. The CLI received the result.', 'success'); }
       sync();
-      return {ok:true, data};
+      return {ok:true, data:receipt || data};
     } catch (err) {
       const message = err instanceof ClientError ? err.message : 'Could not complete the browser request.';
       notice(message, 'error'); sync();
-      return {ok:false, error:message, unknownOutcome:Boolean(err.unknownOutcome)};
+      const receipt = target ? recordVote(target, err.unknownOutcome ? 'unknown_outcome' : 'request_failed', {error:message}) : null;
+      return {ok:false, error:message, unknownOutcome:Boolean(err.unknownOutcome), ...(receipt ? {receipt} : {})};
     }
   }
 }), writable:false, configurable:false});
@@ -753,5 +806,6 @@ connectionReady = restoreConnection();
 </script>
 </body>
 </html>
+
 
 

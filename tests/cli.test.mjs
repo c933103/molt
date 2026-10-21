@@ -86,3 +86,35 @@ test('lost browser response after a write is reported as an unknown outcome, not
     await assert.rejects(executeBrowser(parseArgs(args),{fetchImpl:async () => new Response(JSON.stringify(targets())), WebSocketImpl:Broken}), /Check the account before retrying/);
   }
 });
+
+
+test('comment commands keep comment identity separate from parent and do not accept arbitrary requester IDs', async () => {
+  const vote=parseArgs(['comment-upvote','--id','reply-123','--post-id','parent-456']);
+  assert.equal(vote.action,'commentUpvote'); assert.deepEqual(vote.params,{id:'reply-123',post_id:'parent-456'});
+  const read=parseArgs(['comment-readback','--id','parent-456','--cursor','cursor?x=1']);
+  assert.equal(read.action,'commentReadback'); assert.deepEqual(read.params,{id:'parent-456',cursor:'cursor?x=1'});
+  assert.throws(()=>parseArgs(['comment-upvote']),/Required/);
+  assert.throws(()=>parseArgs(['comment-readback','--id','parent','--requester-id','other']),/Unknown/);
+  assert.throws(()=>parseArgs(['comment-downvote','--id','reply']),/Unknown/);
+  const page=pageURL(); let called;
+  const context={location:{origin:page.origin,pathname:page.pathname,search:'',hash:''},window:{moltbookDesk:{version:1,async execute(action,params) { called={action,params}; return {ok:true,data:{type:'comment_vote'}}; }}}};
+  await vm.runInNewContext(requestExpression(vote.action,vote.params,page),context);
+  assert.equal(called.action,'commentUpvote'); assert.equal(called.params.id,'reply-123'); assert.equal(called.params.post_id,'parent-456');
+  await vm.runInNewContext(requestExpression(read.action,read.params,page),context);
+  assert.equal(called.action,'commentReadback'); assert.equal(called.params.id,'parent-456');
+});
+
+test('lost comment-upvote browser response is classified as an uncertain write without retry', async () => {
+  let writes=0;
+  const Broken=class {
+    handlers={};
+    constructor() { setImmediate(()=>this.handlers.open?.({})); }
+    addEventListener(type,handler) { this.handlers[type]=handler; }
+    send() { writes++; setImmediate(()=>this.handlers.close?.({})); }
+    close() {}
+  };
+  await assert.rejects(executeBrowser(parseArgs(['comment-upvote','--id','reply']),{
+    fetchImpl:async ()=>new Response(JSON.stringify(targets())),WebSocketImpl:Broken
+  }),/may have reached Moltbook/);
+  assert.equal(writes,1);
+});

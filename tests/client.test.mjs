@@ -512,3 +512,95 @@ test('external recovery archive restores authentication after every browser-stor
   assert.equal(JSON.stringify(session).includes(KEY),false);
 });
 
+
+
+test('comment upvote uses only the exact comment endpoint and rejects malformed IDs before sending', async () => {
+  const calls=[]; const {session,operation}=setup(async (...args) => { calls.push(args); return response({success:true,action:'added'}); });
+  for (const id of ['', '../posts/other', 'x/upvote', 'x?requester_id=other', 'x%2fupvote', 'x'.repeat(81), null]) {
+    await assert.rejects(session.request('commentUpvote',{id}));
+  }
+  await assert.rejects(session.request('commentUpvote',{id:'reply-123',post_id:'../other'}));
+  await assert.rejects(session.request('commentDownvote',{id:'reply-123'}));
+  assert.equal(calls.length,0);
+  const op=operation('commentUpvote',{id:'reply-123',post_id:'parent-456',body:{ignored:true},url:'https://evil.invalid'});
+  assert.equal(op.method,'POST'); assert.equal(op.url,'https://www.moltbook.com/api/v1/comments/reply-123/upvote'); assert.equal(op.body,undefined);
+  await session.request('commentUpvote',{id:'reply-123',post_id:'parent-456'});
+  assert.equal(calls.length,1);
+  assert.equal(calls[0][1].headers.Authorization,'Bearer '+KEY);
+  assert.equal(calls[0][1].headers['Content-Type'],undefined); assert.equal(calls[0][1].body,undefined);
+  assert.equal(calls[0][1].credentials,'omit'); assert.equal(calls[0][1].redirect,'error');
+});
+
+test('comment readback derives requester_id from the connected account and preserves unclassified server data', async () => {
+  const calls=[]; const raw={success:true,comments:[{id:'reply-123',content:'Public',upvotes:1,fixture_vote_field:'unclassified',echo:KEY}],has_more:true,next_cursor:'next'};
+  const {session,operation}=setup(async (...args) => { calls.push(args); return response(args[0].endsWith('/agents/me') ? {success:true,agent:{id:'agent-123'}} : raw); });
+  const cursor='cursor?other=value&x=y';
+  const data=await session.request('commentReadback',{id:'parent-456',cursor});
+  assert.equal(calls.length,2); assert.equal(calls[0][0],'https://www.moltbook.com/api/v1/agents/me');
+  const url=new URL(calls[1][0]); assert.equal(url.pathname,'/api/v1/posts/parent-456/comments');
+  assert.equal(url.searchParams.get('requester_id'),'agent-123'); assert.equal(url.searchParams.get('cursor'),cursor);
+  assert.equal(url.searchParams.get('sort'),'new'); assert.equal(url.searchParams.get('limit'),'35');
+  assert.equal(url.searchParams.has('other'),false);
+  assert.equal(data.type,'comment_vote_readback'); assert.equal(data.post_id,'parent-456'); assert.equal(data.requester_id,'agent-123');
+  assert.equal(data.vote_state,'unknown'); assert.equal(data.response.comments[0].fixture_vote_field,'unclassified');
+  assert.equal(data.response.comments[0].echo,'[credential removed]'); assert.equal(data.response.has_more,true);
+  assert.throws(() => operation('comments',{id:'parent',requester_id:'other&injected=value'}));
+  for (const action of ['comments','commentReadback']) await assert.rejects(session.request(action,{id:'parent',requester_id:'someone-else'}),/cannot be supplied/);
+  assert.equal(calls.length,2,'Caller-selected requester must never be sent');
+});
+
+test('unknown account identity stops scoped readback without guessing a requester', async () => {
+  for (const id of [undefined,null,'','../other',KEY]) {
+    let calls=0; const {session}=setup(async () => { calls++; return response({success:true,agent:{id}}); });
+    await assert.rejects(session.request('commentReadback',{id:'parent'}),/public ID is unavailable/);
+    assert.equal(calls,1);
+  }
+});
+
+test('comment readback locks its two reads together and disconnect prevents the second fetch', async () => {
+  let finish; const calls=[];
+  const {session}=setup((...args) => { calls.push(args); return new Promise(resolve => { finish=resolve; }); });
+  const pending=session.request('commentReadback',{id:'parent'});
+  await assert.rejects(session.request('commentUpvote',{id:'reply'}),/already running/);
+  session.disconnect(); finish(response({success:true,agent:{id:'agent-123'}}));
+  await assert.rejects(pending,/discarded/); assert.equal(calls.length,1);
+});
+
+test('comment votes retain a page-lifetime duplicate guard after every received or uncertain outcome', async () => {
+  for (const outcome of ['added','removed','unchanged','unspecified','network','server','malformed','non-json']) {
+    let calls=0; const {session}=setup(async () => {
+      calls++;
+      if (outcome==='network') throw new Error('synthetic transport failure');
+      if (outcome==='server') return response({error:'server failure'},500);
+      if (outcome==='malformed') return new Response('{',{headers:{'content-type':'application/json'}});
+      if (outcome==='non-json') return new Response('<html>no</html>',{headers:{'content-type':'text/html'}});
+      return response({success:true,...(outcome==='unspecified' ? {} : {action:outcome}),secret:'synthetic',echo:KEY});
+    });
+    if (['network','server','malformed','non-json'].includes(outcome)) await assert.rejects(session.request('commentUpvote',{id:'reply'}),e=>e.unknownOutcome);
+    else {
+      const result=await session.request('commentUpvote',{id:'reply'});
+      assert.equal(result.action,outcome==='unspecified' ? undefined : outcome);
+      assert.equal(result.echo,'[credential removed]'); assert.equal(result.secret,'[credential removed]');
+    }
+    assert.equal(session.commentVoteAttempted('reply'),true);
+    await assert.rejects(session.request('commentUpvote',{id:'reply'}),/already attempted/);
+    session.disconnect(); session.connect(KEY);
+    await assert.rejects(session.request('commentUpvote',{id:'reply'}),/already attempted/);
+    assert.equal(calls,1,'No retries, even after reconnect, for '+outcome);
+  }
+});
+
+test('a definite rejected comment vote permits an explicit retry but never retries automatically', async () => {
+  let calls=0; const {session}=setup(async () => { calls++; return response({success:false,error:'Rejected '+KEY},429,{'Retry-After':'60'}); });
+  await assert.rejects(session.request('commentUpvote',{id:'reply'}),e=>!e.unknownOutcome && !e.message.includes(KEY) && /rate limit/.test(e.message));
+  assert.equal(calls,1); assert.equal(session.commentVoteAttempted('reply'),false);
+  await assert.rejects(session.request('commentUpvote',{id:'reply'})); assert.equal(calls,2);
+});
+
+test('comment upvote remains serialized and a disconnected late response cannot clear its guard', async () => {
+  let finish,calls=0; const {session}=setup(async () => { calls++; return new Promise(resolve=>{finish=resolve;}); });
+  const pending=session.request('commentUpvote',{id:'reply'});
+  await assert.rejects(session.request('commentUpvote',{id:'reply'}),/already running/);
+  session.disconnect(); finish(response({success:true,echo:KEY}));
+  await assert.rejects(pending,e=>e.unknownOutcome); assert.equal(session.commentVoteAttempted('reply'),true); assert.equal(calls,1);
+});
