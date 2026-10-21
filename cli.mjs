@@ -4,12 +4,13 @@ import {stat} from 'node:fs/promises';
 import {pathToFileURL} from 'node:url';
 
 export const DEFAULT_PAGE = 'https://c933103.github.io/molt/';
-const WRITES = new Set(['createPost','comment','upvote','downvote','verify','deletePost']);
+const WRITES = new Set(['createPost','comment','upvote','downvote','commentUpvote','verify','deletePost']);
 const COMMANDS = {
   connection:[], me:[], status:[], home:[],
   posts:['sort','community','cursor'], feed:['sort','cursor'], search:['query','cursor'],
   post:['id'], comments:['id','cursor'], publish:['community','title','content-file'],
   comment:['id','parent-id','content-file'], upvote:['id'], downvote:['id'], verify:['code','answer'],
+  'comment-upvote':['id','post-id'], 'comment-readback':['id','cursor'],
   delete:['id','confirm-id']
 };
 const HELP = `Moltbook CLI — uses the key already saved in the browser page
@@ -26,10 +27,14 @@ node cli.mjs comments --id POST_ID
 node cli.mjs publish --community general --title "Title" --content-file post.txt
 node cli.mjs comment --id POST_ID --content-file reply.txt [--parent-id COMMENT_ID]
 node cli.mjs upvote --id POST_ID
+node cli.mjs comment-readback --id POST_ID
+node cli.mjs comment-upvote --id COMMENT_ID [--post-id POST_ID]
 node cli.mjs verify --code VERIFICATION_CODE --answer 15.00
 node cli.mjs delete --id POST_ID --confirm-id POST_ID
 
 Delete is permanent. Both IDs must match; no restore or automatic retry is provided.
+Comment upvotes are attempted once per comment per page instance. Read account data
+first; unknown vote state is not an unvoted state. Reloading resets the duplicate guard.
 
 Use --content-file - to read content from stdin.
 Global options: --cdp http://127.0.0.1:9222, --page HTTPS_PAGE_URL, --tab TAB_ID
@@ -58,19 +63,20 @@ export function parseArgs(args) {
   }
   const endpoint = loopbackEndpoint(opts.cdp);
   const page = pageURL(opts.page);
-  const action = command === 'publish' ? 'createPost' : command === 'delete' ? 'deletePost' : command;
+  const action = command === 'publish' ? 'createPost' : command === 'delete' ? 'deletePost' : command === 'comment-upvote' ? 'commentUpvote' : command === 'comment-readback' ? 'commentReadback' : command;
   const params = {};
   if (['posts','feed'].includes(action)) params.sort = opts.sort || 'new';
   if (opts.community) params.submolt = opts.community;
   if (opts.cursor) params.cursor = opts.cursor;
   if (opts.id) params.id = opts.id;
+  if (opts['post-id']) params.post_id = opts['post-id'];
   if (opts['confirm-id']) params.confirm_id = opts['confirm-id'];
   if (opts.query) params.q = opts.query;
   if (opts.title) params.title = opts.title;
   if (opts['parent-id']) params.parent_id = opts['parent-id'];
   if (opts.code) params.code = opts.code;
   if (opts.answer) params.answer = opts.answer;
-  const required = {search:['query'],post:['id'],comments:['id'],publish:['community','title','content-file'],comment:['id','content-file'],upvote:['id'],downvote:['id'],verify:['code','answer'],delete:['id','confirm-id']}[command] || [];
+  const required = {search:['query'],post:['id'],comments:['id'],'comment-upvote':['id'],'comment-readback':['id'],publish:['community','title','content-file'],comment:['id','content-file'],upvote:['id'],downvote:['id'],verify:['code','answer'],delete:['id','confirm-id']}[command] || [];
   for (const name of required) if (!opts[name]) throw new Error('Required option: --' + name);
   if (command === 'delete' && opts.id !== opts['confirm-id']) throw new Error('Confirm deletion with the same post ID in --id and --confirm-id.');
   return {action, params, endpoint, page, tab:opts.tab, contentFile:opts['content-file']};
@@ -100,7 +106,7 @@ export function socketURL(value, endpoint) {
   return url;
 }
 export function requestExpression(action, params, page) {
-  if (!Object.hasOwn(COMMANDS, action) && !['createPost','deletePost'].includes(action)) throw new Error('Unsupported browser action.');
+  if (!Object.hasOwn(COMMANDS, action) && !['createPost','deletePost','commentUpvote','commentReadback'].includes(action)) throw new Error('Unsupported browser action.');
   const expected = JSON.stringify({origin:page.origin, pathname:page.pathname});
   const request = JSON.stringify({action, params});
   return `(async () => {
@@ -159,7 +165,11 @@ export async function main(args = process.argv.slice(2)) {
   if (typeof WebSocket !== 'function') throw new Error('Use Node.js 22.4 or newer.');
   if (request.contentFile) request.params.content = await readContent(request.contentFile);
   const result = await executeBrowser(request);
-  if (!result.ok) throw new Error(String(result.error || 'The browser request failed.') + (result.unknownOutcome ? ' Check the account before retrying.' : ''));
+  if (!result.ok) {
+    if (result.receipt) process.stderr.write(JSON.stringify(result.receipt,null,2) + '\n');
+    throw new Error(String(result.error || 'The browser request failed.') + (result.unknownOutcome ? ' Check the account before retrying.' : ''));
+  }
   process.stdout.write(JSON.stringify(result.data,null,2) + '\n');
 }
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) main().catch(error => { process.stderr.write('Moltbook CLI: ' + error.message + '\n'); process.exitCode = 1; });
+
