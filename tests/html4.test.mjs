@@ -360,6 +360,11 @@ test('Disconnect while saving the connection prevents the later automatic downlo
 
 
 
+function readRaw(fixture) {
+  if (fixture.elements.get('raw-toggle').textContent === 'Show raw response') fixture.elements.get('raw-toggle').events.click();
+  return JSON.parse(fixture.elements.get('raw-response').textContent);
+}
+
 test('vote buttons retain the exact sanitized outcome without replacing the post or pagination', async () => {
   for (const action of ['upvote', 'downvote']) for (const outcome of ['added', 'removed', 'unchanged']) {
     let finish;
@@ -378,10 +383,10 @@ test('vote buttons retain the exact sanitized outcome without replacing the post
     assert.ok(control);
     const countBefore = fixture.calls.length;
     const pending = control.events.click();
-    assert.deepEqual(JSON.parse(fixture.elements.get('raw-response').textContent),{action,post_id:post.id,state:'pending'});
+    assert.deepEqual(readRaw(fixture),{action,post_id:post.id,state:'pending'});
     finish(new Response(JSON.stringify({success:true,action:outcome,message:'Server result '+outcome,echo:KEY,secret:'synthetic-secret'}),{headers:{'content-type':'application/json'}}));
     await pending;
-    const receipt = JSON.parse(fixture.elements.get('raw-response').textContent);
+    const receipt = readRaw(fixture);
     assert.equal(receipt.action,action); assert.equal(receipt.post_id,post.id);
     assert.equal(receipt.state,'response_received'); assert.equal(receipt.response.action,outcome);
     assert.equal(receipt.response.message,'Server result '+outcome);
@@ -410,7 +415,7 @@ test('failed and uncertain votes replace the prior receipt honestly and never re
     const walk = elements => elements.flatMap(element => [element,...walk(element.children || [])]);
     const control = walk(before).find(element => element.tagName==='BUTTON' && element.textContent==='Upvote');
     const calls = fixture.calls.length; await control.events.click();
-    const receipt=JSON.parse(fixture.elements.get('raw-response').textContent);
+    const receipt=readRaw(fixture);
     assert.equal(receipt.action,'upvote'); assert.equal(receipt.post_id,'receipt-post');
     assert.equal(receipt.state,failure==='rejected'?'request_failed':'unknown_outcome');
     assert.equal('response' in receipt,false); assert.equal(receipt.error.includes(KEY),false);
@@ -435,11 +440,11 @@ test('repeated vote clicks do not dispatch twice and disconnect cannot expose a 
   const first=control.events.click();
   await control.events.click();
   assert.equal(fixture.calls.length,calls+1);
-  assert.equal(JSON.parse(fixture.elements.get('raw-response').textContent).state,'pending');
+  assert.equal(readRaw(fixture).state,'pending');
   await fixture.elements.get('disconnect').events.click();
   finish(new Response(JSON.stringify({success:true,action:'added',secret:KEY,message:'late-response-marker'}),{headers:{'content-type':'application/json'}}));
   await first;
-  const receipt=JSON.parse(fixture.elements.get('raw-response').textContent);
+  const receipt=readRaw(fixture);
   assert.equal(receipt.state,'unknown_outcome'); assert.equal('response' in receipt,false);
   assert.doesNotMatch(fixture.elements.get('raw-response').textContent,/late-response-marker/);
   assert.equal(fixture.elements.get('raw-response').textContent.includes(KEY),false);
@@ -471,7 +476,7 @@ test('comment cards vote on top-level, nested and search comment IDs, not their 
     await controls.at(-1).events.click();
     const last=fixture.calls.at(-1); assert.equal(last.url,'https://www.moltbook.com/api/v1/comments/reply-123/upvote');
     assert.equal(last.options.method,'POST'); assert.equal(last.options.body,undefined);
-    const receipt=JSON.parse(fixture.elements.get('raw-response').textContent);
+    const receipt=readRaw(fixture);
     assert.equal(receipt.type,'comment_vote'); assert.equal(receipt.comment_id,'reply-123'); assert.equal(receipt.post_id,source==='search-without-parent'?undefined:'parent-456');
     assert.deepEqual(fixture.elements.get('results').children,before);
     if (source==='search-without-parent') assert.equal(findControl(fixture,'Open post'),undefined,'Do not treat a comment ID as an unknown parent ID');
@@ -497,11 +502,11 @@ test('comment receipts preserve exact sanitized responses, the surrounding view 
     await fixture.connect(); await fixture.window.moltbookDesk.execute('comments',{id:'parent'});
     const before=fixture.elements.get('results').children.slice(); const control=findControl(fixture,'Upvote comment once'); const calls=fixture.calls.length;
     const pending=control.events.click();
-    assert.deepEqual(JSON.parse(fixture.elements.get('raw-response').textContent),{type:'comment_vote',action:'commentUpvote',comment_id:'reply',post_id:'parent',state:'pending'});
+    assert.deepEqual(readRaw(fixture),{type:'comment_vote',action:'commentUpvote',comment_id:'reply',post_id:'parent',state:'pending'});
     await control.events.click(); assert.equal(fixture.calls.length,calls+1);
     const result={success:true,...(outcome?{action:outcome}:{}),message:'Exact server receipt',echo:KEY,api_key:'synthetic'};
     finish(jsonResponse(result)); await pending;
-    const receipt=JSON.parse(fixture.elements.get('raw-response').textContent);
+    const receipt=readRaw(fixture);
     assert.deepEqual(receipt.response,{...result,echo:'[credential removed]',api_key:'[credential removed]'});
     assert.equal(receipt.state,'response_received'); assert.equal('vote_state' in receipt,false,'A response is not proof of added or absent vote state');
     const saved=fixture.elements.get('raw-response').textContent;
@@ -522,13 +527,13 @@ test('comment failures distinguish rejected from unknown and the CLI shares the 
     }});
     await fixture.connect(); await fixture.window.moltbookDesk.execute('comments',{id:'parent'});
     const calls=fixture.calls.length; await findControl(fixture,'Upvote comment once').events.click();
-    const receipt=JSON.parse(fixture.elements.get('raw-response').textContent);
+    const receipt=readRaw(fixture);
     assert.equal(receipt.state,failure==='rejected'?'request_failed':'unknown_outcome'); assert.equal(receipt.error.includes(KEY),false);
     assert.equal(fixture.calls.length,calls+1);
     if(failure!=='rejected') {
       const result=await fixture.window.moltbookDesk.execute('commentUpvote',{id:'reply',post_id:'parent'});
       assert.equal(result.ok,false); assert.match(result.error,/already attempted/); assert.equal(fixture.calls.length,calls+1);
-      assert.deepEqual(JSON.parse(fixture.elements.get('raw-response').textContent),receipt);
+      assert.deepEqual(readRaw(fixture),receipt);
     }
   }
 });
@@ -548,7 +553,7 @@ test('account readback exposes raw unknown state and preserves scoped pagination
   const fixture=pageFixture({fetch:async url=>jsonResponse(url.includes('/comments?')?{comments:[{id:'reply',content:'Public',upvotes:1,fixture_vote_field:'not interpreted'}],has_more:true,next_cursor:'next?cursor=value'}:{agent:{id:'agent-123'}})});
   await fixture.connect(); await fixture.window.moltbookDesk.execute('comments',{id:'parent'});
   await findControl(fixture,'Read account vote data').events.click();
-  const read=JSON.parse(fixture.elements.get('raw-response').textContent);
+  const read=readRaw(fixture);
   assert.equal(read.type,'comment_vote_readback'); assert.equal(read.vote_state,'unknown'); assert.equal(read.requester_id,'agent-123');
   assert.equal(read.response.comments[0].fixture_vote_field,'not interpreted');
   assert.ok(descendants(fixture.elements.get('results').children).some(el=>/state is unknown/.test(el.textContent)));
@@ -567,8 +572,24 @@ test('disconnect discards a late comment vote response and its guard survives re
   await fixture.connect(); await fixture.window.moltbookDesk.execute('comments',{id:'parent'});
   const pending=findControl(fixture,'Upvote comment once').events.click(); const calls=fixture.calls.length;
   await fixture.elements.get('disconnect').events.click(); finish(jsonResponse({success:true,message:'late-private-response',echo:KEY})); await pending;
-  const receipt=JSON.parse(fixture.elements.get('raw-response').textContent); assert.equal(receipt.state,'unknown_outcome'); assert.equal('response' in receipt,false);
+  const receipt=readRaw(fixture); assert.equal(receipt.state,'unknown_outcome'); assert.equal('response' in receipt,false);
   assert.doesNotMatch(fixture.elements.get('raw-response').textContent,/late-private-response/); assert.equal(fixture.calls.length,calls);
   await fixture.connect(); const before=fixture.calls.length;
   const retry=await fixture.window.moltbookDesk.execute('commentUpvote',{id:'reply'}); assert.equal(retry.ok,false); assert.equal(fixture.calls.length,before);
+});
+
+
+test('a null API response can be inspected and Disconnect clears it without another request', async () => {
+  let requests=0;
+  const fixture=pageFixture({fetch:async () => new Response(JSON.stringify(++requests===1?{agent:{id:'fixture'}}:null),{headers:{'content-type':'application/json'}})});
+  await fixture.connect();
+  await fixture.window.moltbookDesk.execute('me');
+  fixture.elements.get('raw-toggle').events.click();
+  assert.equal(fixture.elements.get('raw-response').textContent,'null');
+  await fixture.elements.get('disconnect').events.click();
+  assert.equal(fixture.elements.get('raw-response').textContent,'None');
+  assert.equal(fixture.elements.get('raw-controls').children.length,0);
+  fixture.elements.get('raw-toggle').events.click();
+  assert.equal(fixture.elements.get('raw-response').textContent,'None');
+  assert.equal(requests,2);
 });
