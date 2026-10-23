@@ -4,7 +4,7 @@
   <meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="referrer" content="no-referrer">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-kU3mgyoo5bxpYjdt6AAgMD3U1imenC53AfPmZtLKGNM='; style-src 'none'; connect-src https://www.moltbook.com; base-uri 'none'; form-action 'none'; object-src 'none'">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-Wch4GUb31acod+5V7VsI1V7qV1MKzN/e0WT9252pP2k='; style-src 'none'; connect-src https://www.moltbook.com; base-uri 'none'; form-action 'none'; object-src 'none'">
   <title>Moltbook browser desk</title>
 </head>
 <body>
@@ -135,6 +135,8 @@ node cli.mjs posts --sort new</pre>
   <div id="results"><p>No requests yet.</p></div>
   <p><button id="next-page" type="button" disabled>Next page</button></p>
   <h3>Last API response</h3>
+  <p><button id="raw-toggle" type="button">Show raw response</button></p>
+  <div id="raw-controls"></div>
   <pre id="raw-response">None</pre>
 </div>
 <hr>
@@ -570,7 +572,79 @@ function sync() {
 function node(tag, text, className = '') { const el = document.createElement(tag); el.textContent = text; if (className) el.className = className; return el; }
 function button(label, handler) { const b = node('button', label); b.type = 'button'; b.addEventListener('click', handler); return b; }
 function replyTo(postId, parentId = '') { $('comment-post-id').value = postId; $('parent-id').value = parentId; view('reply'); $('comment-content').focus(); }
-function card(item, forcedPostId, depth = 0) {
+// Bound mounted cards and text independently; local navigation never requests data.
+const CARD_PAGE_SIZE = 20, TEXT_PAGE_SIZE = 4096, BODY_BREAK_LIMIT = 8;
+function textPages(target, text, controls, wrapBody = false) {
+  let offset = 0; const previous = [];
+  function show() {
+    let end = Math.min(offset + TEXT_PAGE_SIZE, text.length);
+    if (end < text.length && /[\uD800-\uDBFF]/.test(text[end - 1]) && /[\uDC00-\uDFFF]/.test(text[end])) end--;
+    if (wrapBody) {
+      // Keep CRLF together and cap break nodes as well as characters.
+      if (end < text.length && text[end - 1] === '\r' && text[end] === '\n') end--;
+      const candidate = text.slice(offset, end), breaks = /\r\n|\r|\n/g;
+      let match, count = 0;
+      while ((match = breaks.exec(candidate))) if (++count === BODY_BREAK_LIMIT) { end = offset + match.index + match[0].length; break; }
+      target.replaceChildren();
+      text.slice(offset, end).split(/\r\n|\r|\n/).forEach((line, index) => {
+        if (index) target.append(document.createElement('br'));
+        target.append(document.createTextNode(line));
+      });
+    } else target.textContent = text.slice(offset, end);
+    controls.replaceChildren(node('p', 'Text units (UTF-16) ' + (text.length ? offset + 1 : 0) + '–' + end + ' of ' + text.length));
+    if (offset) controls.append(button('Previous text', () => { offset = previous.pop(); show(); }));
+    if (end < text.length) controls.append(button('Next text', () => { previous.push(offset); offset = end; show(); }));
+  }
+  show();
+}
+let rawData, rawVisible = false;
+function setRaw(data) {
+  rawData = data; rawVisible = false;
+  $('raw-response').textContent = data === undefined ? 'None' : 'Raw response collapsed.';
+  $('raw-controls').replaceChildren();
+  $('raw-toggle').textContent = 'Show raw response';
+}
+$('raw-toggle').addEventListener('click', () => {
+  if (rawVisible) { setRaw(rawData); return; }
+  if (rawData === undefined) return;
+  rawVisible = true; $('raw-toggle').textContent = 'Hide raw response';
+  textPages($('raw-response'), JSON.stringify(rawData, null, 2), $('raw-controls'));
+});
+function showCards(items, forcedPostId) {
+  const stack = [{items, index:0, postId:forcedPostId, depth:0, parentId:null}], pages = [];
+  let current = 0;
+  function take() {
+    const page = []; let steps = 0;
+    while (stack.length && page.length < CARD_PAGE_SIZE && steps++ < 200) {
+      const frame = stack[stack.length - 1];
+      if (frame.index >= frame.items.length) { stack.pop(); continue; }
+      const item = frame.items[frame.index++];
+      if (!item || typeof item !== 'object') continue;
+      page.push({item, postId:frame.postId, depth:frame.depth, parentId:frame.parentId});
+      const isComment = frame.postId !== undefined || item.type === 'comment';
+      const postId = frame.postId || item.post_id || item.post?.id || (isComment ? undefined : item.id);
+      if (Array.isArray(item.replies) && item.replies.length) stack.push({items:item.replies, index:0, postId:postId || null, depth:frame.depth + 1, parentId:item.id});
+    }
+    while (stack.length && stack[stack.length - 1].index >= stack[stack.length - 1].items.length) stack.pop();
+    return page;
+  }
+  function show() {
+    if (!pages[current]) pages[current] = take();
+    const page = pages[current];
+    $('results').replaceChildren();
+    for (const entry of page) {
+      const el = card(entry.item, entry.postId);
+      if (entry.depth) el.append(node('p', 'Reply depth ' + entry.depth + '; parent ID: ' + String(entry.parentId || '(not supplied)')));
+      $('results').append(el);
+    }
+    if (!page.length) $('results').append(node('p', stack.length ? 'No cards in this section; continue to inspect remaining entries.' : 'No items found in this section.', 'muted'));
+    $('results').append(node('p', 'Local card page ' + (current + 1) + '. ' + (stack.length || pages[current + 1] ? 'More response entries remain to inspect.' : 'End of cards in this response.')));
+    if (current) $('results').append(button('Previous cards', () => { current--; show(); }));
+    if (stack.length || pages[current + 1]) $('results').append(button('Next cards', () => { current++; show(); }));
+  }
+  show();
+}
+function card(item, forcedPostId) {
   const el = node('div', '', 'card');
   const isComment = forcedPostId !== undefined || item.type === 'comment';
   const postId = forcedPostId || item.post_id || item.post?.id || (isComment ? undefined : item.id);
@@ -578,10 +652,9 @@ function card(item, forcedPostId, depth = 0) {
   const readableComment = isComment && validId(item.id) && typeof item.content === 'string' && item.content.trim() && !/^\[(deleted|removed)\]$/i.test(item.content.trim()) && item.deleted !== true && item.is_deleted !== true && !item.deleted_at;
   el.append(node('h3', String(item.title || (isComment ? 'Comment' : 'Post'))));
   el.append(node('p', [item.submolt?.name ? 'm/' + item.submolt.name : '', item.author?.name || '', item.created_at || '', item.upvotes != null ? '▲ ' + item.upvotes : ''].filter(Boolean).join(' · '), 'meta'));
-  const body = node('div', '', 'body');
-  const lines = String(item.content || '').split(/\r\n|\r|\n/);
-  lines.forEach((line, index) => { if (index) body.append(document.createElement('br')); body.append(document.createTextNode(line)); });
-  el.append(body);
+  const body = node('div', '', 'body'), bodyControls = node('div', '');
+  textPages(body, String(item.content || ''), bodyControls, true);
+  el.append(body, bodyControls);
   el.append(node('p', 'ID: ' + String(item.id || ''), 'id'));
   if (typeof item.url === 'string') el.append(node('p', 'Linked URL: ' + item.url, 'body'));
   const actions = node('div', '', 'actions');
@@ -595,20 +668,17 @@ function card(item, forcedPostId, depth = 0) {
     if (readableComment) actions.append(button('Upvote comment once', () => run('commentUpvote', {id:item.id, ...(validId(postId) ? {post_id:postId} : {})}, false)));
   }
   el.append(actions);
-  if (Array.isArray(item.replies) && depth < 8) for (const child of item.replies.slice(0,100)) if (child && typeof child === 'object') el.append(card(child, postId || null, depth + 1));
   return el;
 }
 function display(data, action, params) {
-  $('raw-response').textContent = JSON.stringify(data, null, 2);
+  setRaw(data);
   if (action === 'commentReadback') data = data.response;
   $('results-title').textContent = MUTATIONS.has(action) ? 'Action response' : 'Results';
   $('results').replaceChildren();
   const items = Array.isArray(data?.posts) ? data.posts : Array.isArray(data?.results) ? data.results : Array.isArray(data?.comments) ? data.comments : null;
-  if (items) {
-    for (const item of items.slice(0,100)) if (item && typeof item === 'object') $('results').append(card(item, ['comments','commentReadback'].includes(action) ? params.id : undefined));
-    if (!items.length) $('results').append(node('p', 'No items found.', 'muted'));
-  } else if (data?.post && typeof data.post === 'object') $('results').append(card(data.post));
-  else $('results').append(node('pre', JSON.stringify(data, null, 2)));
+  if (items) showCards(items, ['comments','commentReadback'].includes(action) ? params.id : undefined);
+  else if (data?.post && typeof data.post === 'object') showCards([data.post]);
+  else $('results').append(node('p', 'Response received. Use Show raw response to inspect it.'));
   next = ['posts','feed','search','comments','commentReadback'].includes(action) && data?.has_more && typeof data.next_cursor === 'string' ? {action, params:{...params, cursor:data.next_cursor}} : null;
   $('next-page').disabled = !next;
   const challenge = data?.verification || data?.post?.verification || data?.comment?.verification;
@@ -626,7 +696,7 @@ function voteTarget(action, params) {
 }
 function recordVote(target, state, details = {}) {
   const receipt = {...target, state, ...details};
-  $('raw-response').textContent = JSON.stringify(receipt, null, 2);
+  setRaw(receipt);
   return receipt;
 }
 async function run(action, params = {}, show = true) {
@@ -748,7 +818,7 @@ $('recovery-import').addEventListener('click', async () => {
 $('disconnect').addEventListener('click', async () => {
   const generation = ++connectionGeneration; session.disconnect(); connectionBusy = true;
   resetRecoveryDownload(); $('recovery-file').value = '';
-  $('api-key').value = ''; next = null; $('next-page').disabled = true; $('results').replaceChildren(node('p', 'Disconnected.')); $('raw-response').textContent = 'None'; $('verification-code').value = ''; $('challenge').textContent = 'No publishing challenge has been returned.';
+  $('api-key').value = ''; next = null; $('next-page').disabled = true; $('results').replaceChildren(node('p', 'Disconnected.')); setRaw(undefined); $('verification-code').value = ''; $('challenge').textContent = 'No publishing challenge has been returned.';
   notice('Disconnected. Removing the saved credential…'); sync();
   try { if (vault) await vault.forget(); if (generation === connectionGeneration) notice('Disconnected. The saved cookie, session copy, browser backup and decryption key have been removed.'); }
   catch (err) { if (generation === connectionGeneration) notice('Disconnected. ' + (err instanceof ClientError ? err.message : 'Clear this site’s cookies and storage to remove any saved credential.'), 'error'); }
@@ -819,3 +889,4 @@ connectionReady = restoreConnection();
 </script>
 </body>
 </html>
+
