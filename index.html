@@ -4,7 +4,7 @@
   <meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="referrer" content="no-referrer">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-duBEJYG697a+VFcVW3zWcKD0FWWVsW7ASRdGPwXna0A='; style-src 'none'; connect-src https://www.moltbook.com; base-uri 'none'; form-action 'none'; object-src 'none'">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-kU3mgyoo5bxpYjdt6AAgMD3U1imenC53AfPmZtLKGNM='; style-src 'none'; connect-src https://www.moltbook.com; base-uri 'none'; form-action 'none'; object-src 'none'">
   <title>Moltbook browser desk</title>
 </head>
 <body>
@@ -24,9 +24,9 @@
 <div id="recovery-panel">
   <h2>Recovery file outside the browser</h2>
   <p><button id="recovery-download" type="button" disabled>Download recovery ZIP</button></p>
-  <p>After a successful Connect, this page automatically requests a recovery ZIP download. Reloading a saved connection or restoring from a ZIP does not start another download.</p>
+  <p>After a successful Connect with a new key, this page automatically requests moltbook-pw123.zip. Connecting again with the current key, reloading a saved connection or restoring from a ZIP does not start another download.</p>
   <p id="recovery-status">If the automatic download does not appear, use Download recovery ZIP to try again. The page cannot confirm that your browser saved the file.</p>
-  <p>Save moltbook-recovery.zip on your device or other storage. It contains api-key.txt and opens with password 123. This file restores your connection even after all browser data is lost. Anyone with the file and password can recover the API key. Disconnect cannot delete copies you downloaded.</p>
+  <p>Save moltbook-pw123.zip on your device or other storage. If that name already exists, your browser handles the filename conflict according to its download settings; this page cannot check existing files or force a prompt. It contains api-key.txt and opens with password 123. This file restores your connection even after all browser data is lost. Anyone with the file and password can recover the API key. Disconnect cannot delete copies you downloaded.</p>
   <p><label for="recovery-file">Choose a previously downloaded recovery ZIP</label><br>
   <input id="recovery-file" type="file">
   <button id="recovery-import" type="button">Restore from ZIP</button></p>
@@ -462,6 +462,7 @@ class MoltbookSession {
     this.#key = value; this.#epoch++;
   }
   get connected() { return Boolean(this.#key); }
+  usesKey(value) { return this.connected && this.#key === value; }
   get busy() { return this.#busy; }
   commentVoteAttempted(id) { return this.#commentVotes.has(id); }
   disconnect() { this.#key = ''; this.#epoch++; if (this.#controller) this.#controller.abort(); }
@@ -681,8 +682,19 @@ action('connect-form', 'connect-button', async () => {
   if (connectionBusy || session.busy) return;
   const generation = ++connectionGeneration;
   const input = $('api-key'); const key = input.value.trim(); input.value = '';
-  resetRecoveryDownload();
-  await connectKey(key,generation,true);
+  connectionBusy = true; sync();
+  try {
+    let downloadRecovery = !session.usesKey(key);
+    if (downloadRecovery && !session.connected && vault && KEY_PATTERN.test(key)) {
+      // A rejected replacement disconnects the session but leaves the original
+      // saved credential intact. Do not mistake it for a new key on reconnect.
+      try { if (await vault.restore() === key) downloadRecovery = false; }
+      catch { /* Storage failure must not prevent explicit authentication. */ }
+    }
+    if (generation !== connectionGeneration) return;
+    if (downloadRecovery) resetRecoveryDownload();
+    await connectKey(key,generation,downloadRecovery);
+  } finally { if (generation === connectionGeneration) { connectionBusy = false; sync(); } }
 });
 function revokeRecoveryDownload() {
   if (recoveryDownloadUrl) { URL.revokeObjectURL(recoveryDownloadUrl); recoveryDownloadUrl = null; }
@@ -692,7 +704,8 @@ function resetRecoveryDownload() {
   $('recovery-download').textContent = 'Download recovery ZIP';
   $('recovery-status').textContent = '';
 }
-// Only explicit Connect and the download button export; restore and CLI calls do not.
+// Only explicit Connect with a new key and the download button export;
+// restore and CLI calls do not. Filesystem conflicts are left to the browser.
 function requestRecoveryDownload() {
   let archive, link;
   try {
@@ -701,7 +714,7 @@ function requestRecoveryDownload() {
     recoveryDownloadUrl = URL.createObjectURL(new Blob([archive],{type:'application/zip'}));
     link = document.createElement('a'); link.href = recoveryDownloadUrl; link.type = 'application/zip';
     // Modern download support enhances the valid HTML 4.0 source markup.
-    link.download = 'moltbook-recovery.zip'; document.body.append(link); link.click();
+    link.download = 'moltbook-pw123.zip'; document.body.append(link); link.click();
     $('recovery-download').textContent = 'Download recovery ZIP again';
     $('recovery-status').textContent = 'Recovery ZIP download requested. The page cannot confirm that your browser saved it. Save the file outside this browser. ZIP password: 123. If no download appeared, use Download recovery ZIP again.';
   } catch {
@@ -806,6 +819,3 @@ connectionReady = restoreConnection();
 </script>
 </body>
 </html>
-
-
-
