@@ -248,6 +248,53 @@ test('failed or invalid Connect never exports a recovery file', async () => {
   assert.equal(f.elements.get('recovery-download').disabled,true);
 });
 
+test('a rejected key rotation does not turn the original saved key into a new backup', async () => {
+  const rejected = KEY + '_rejected';
+  const f = pageFixture({storage:savedStorage(),fetch:async (_,options) =>
+    options.headers.Authorization === 'Bearer ' + rejected
+      ? jsonResponse({error:'Fixture rejection'},401)
+      : jsonResponse({success:true,agent:{name:'Fixture'}})});
+  await f.window.moltbookDesk.execute('connection');
+  await f.connect(); assert.equal(f.links.length,1);
+  await f.connect(rejected);
+  assert.equal((await f.window.moltbookDesk.execute('connection')).data.connected,false);
+  assert.equal(f.links.length,1);
+  await f.connect();
+  assert.equal((await f.window.moltbookDesk.execute('connection')).data.connected,true);
+  assert.equal(f.links.length,1,'The original saved key already had its automatic backup');
+  await f.connect(KEY + '_rotated');
+  assert.equal(f.links.length,2,'A genuinely different authenticated key still downloads');
+});
+
+test('Disconnect cancels Connect while it checks the previously saved key', async () => {
+  const storage = savedStorage(), rejected = KEY + '_rejected';
+  const f = pageFixture({storage,fetch:async (_,options) =>
+    options.headers.Authorization === 'Bearer ' + rejected
+      ? jsonResponse({error:'Fixture rejection'},401)
+      : jsonResponse({success:true,agent:{name:'Fixture'}})});
+  await f.window.moltbookDesk.execute('connection');
+  await f.connect(); await f.connect(rejected);
+  const requestsBefore = f.calls.length, downloadsBefore = f.links.length;
+  const open = storage.indexedDB.open;
+  let resume, began;
+  const reading = new Promise(resolve => { began=resolve; });
+  storage.indexedDB.open = () => {
+    const req = {};
+    resume = () => {
+      const actual = open();
+      actual.onsuccess = () => { req.result=actual.result; req.onsuccess?.(); };
+    };
+    began(); return req;
+  };
+  const connecting = f.connect(); await reading;
+  const disconnecting = f.elements.get('disconnect').events.click();
+  storage.indexedDB.open = open; resume();
+  await Promise.all([connecting,disconnecting]);
+  assert.equal(f.calls.length,requestsBefore,'Cancelled Connect must not authenticate after the storage read');
+  assert.equal(f.links.length,downloadsBefore);
+  assert.equal((await f.window.moltbookDesk.execute('connection')).data.connected,false);
+});
+
 test('export failures preserve connection and a visible manual retry after other API requests', async t => {
   for (const stage of ['beforeObjectURL','beforeClick']) await t.test(stage,async () => {
     let fail = true;

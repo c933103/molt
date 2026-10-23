@@ -4,7 +4,7 @@
   <meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="referrer" content="no-referrer">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-ITIqGIAirn1FCT+v6o9b0z5y/059c7jzvRIRjzFhhnI='; style-src 'none'; connect-src https://www.moltbook.com; base-uri 'none'; form-action 'none'; object-src 'none'">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-kU3mgyoo5bxpYjdt6AAgMD3U1imenC53AfPmZtLKGNM='; style-src 'none'; connect-src https://www.moltbook.com; base-uri 'none'; form-action 'none'; object-src 'none'">
   <title>Moltbook browser desk</title>
 </head>
 <body>
@@ -682,9 +682,19 @@ action('connect-form', 'connect-button', async () => {
   if (connectionBusy || session.busy) return;
   const generation = ++connectionGeneration;
   const input = $('api-key'); const key = input.value.trim(); input.value = '';
-  const downloadRecovery = !session.usesKey(key);
-  if (downloadRecovery) resetRecoveryDownload();
-  await connectKey(key,generation,downloadRecovery);
+  connectionBusy = true; sync();
+  try {
+    let downloadRecovery = !session.usesKey(key);
+    if (downloadRecovery && !session.connected && vault && KEY_PATTERN.test(key)) {
+      // A rejected replacement disconnects the session but leaves the original
+      // saved credential intact. Do not mistake it for a new key on reconnect.
+      try { if (await vault.restore() === key) downloadRecovery = false; }
+      catch { /* Storage failure must not prevent explicit authentication. */ }
+    }
+    if (generation !== connectionGeneration) return;
+    if (downloadRecovery) resetRecoveryDownload();
+    await connectKey(key,generation,downloadRecovery);
+  } finally { if (generation === connectionGeneration) { connectionBusy = false; sync(); } }
 });
 function revokeRecoveryDownload() {
   if (recoveryDownloadUrl) { URL.revokeObjectURL(recoveryDownloadUrl); recoveryDownloadUrl = null; }
