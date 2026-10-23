@@ -140,7 +140,7 @@ test('native controls connect, download and restore an external ZIP, and share t
   assert.equal(elements.get('recovery-download').disabled,false);
   await elements.get('recovery-download').events.click();
   assert.equal(downloads.length,2); assert.equal(downloads[0].type,'application/zip');
-  assert.deepEqual(links,[1,2].map(n => ({href:'blob:https://c933103.github.io/synthetic-' + n,name:'moltbook-recovery.zip'})));
+  assert.deepEqual(links,[1,2].map(n => ({href:'blob:https://c933103.github.io/synthetic-' + n,name:'moltbook-pw123.zip'})));
   assert.equal(calls.length,4,'Export must not send a network request');
   assert.equal(elements.get('status').textContent.includes(KEY),false);
   const cliExport = await window.moltbookDesk.execute('recoveryArchive');
@@ -202,7 +202,7 @@ function savedStorage() {
   };
 }
 
-test('explicit Connect downloads once; startup and back/forward restoration never download', async () => {
+test('new-key Connect downloads once; current-key Connect and browser restoration never download', async () => {
   const storage = savedStorage(), first = pageFixture({storage});
   await first.window.moltbookDesk.execute('connection');
   await first.connect();
@@ -217,7 +217,26 @@ test('explicit Connect downloads once; startup and back/forward restoration neve
   assert.equal((await restored.window.moltbookDesk.execute('connection')).data.connected,true);
   assert.equal(restored.downloads.length,0); assert.equal(restored.calls.length,0);
   await restored.connect();
-  assert.equal(restored.downloads.length,1,'A later explicit Connect requests a new backup');
+  assert.equal(restored.downloads.length,0,'Connecting with the restored current key does not download again');
+  await restored.connect(KEY + '_rotated');
+  assert.equal(restored.downloads.length,1,'A new key requests a new backup');
+  assert.equal(restored.links[0].name,'moltbook-pw123.zip');
+});
+
+test('only new keys trigger automatic backups and every download suggests the fixed filename', async () => {
+  const f = pageFixture();
+  await f.connect();
+  assert.equal(f.links.length,1);
+  await f.connect('  ' + KEY + '  ');
+  assert.equal(f.links.length,1,'Reauthenticating the current key must not repeat the download');
+  await f.connect(KEY + '_rotated');
+  assert.equal(f.links.length,2,'A different successfully authenticated key needs a new recovery file');
+  await f.elements.get('recovery-download').events.click();
+  assert.equal(f.links.length,3,'Manual export can request another copy');
+  assert.deepEqual(f.links.map(link=>link.name),Array(3).fill('moltbook-pw123.zip'));
+  await f.elements.get('disconnect').events.click();
+  await f.connect(KEY + '_rotated');
+  assert.equal(f.links.length,4,'A forgotten key is a new connection; the browser resolves existing filenames');
 });
 
 test('failed or invalid Connect never exports a recovery file', async () => {
