@@ -4,7 +4,7 @@
   <meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="referrer" content="no-referrer">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-TBWuLFqI0/ONP7Cd4KWuNcsswjjlnnXUhr4mEoV5vco='; style-src 'none'; connect-src https://www.moltbook.com; base-uri 'none'; form-action 'none'; object-src 'none'">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-Wch4GUb31acod+5V7VsI1V7qV1MKzN/e0WT9252pP2k='; style-src 'none'; connect-src https://www.moltbook.com; base-uri 'none'; form-action 'none'; object-src 'none'">
   <title>Moltbook browser desk</title>
 </head>
 <body>
@@ -573,13 +573,24 @@ function node(tag, text, className = '') { const el = document.createElement(tag
 function button(label, handler) { const b = node('button', label); b.type = 'button'; b.addEventListener('click', handler); return b; }
 function replyTo(postId, parentId = '') { $('comment-post-id').value = postId; $('parent-id').value = parentId; view('reply'); $('comment-content').focus(); }
 // Bound mounted cards and text independently; local navigation never requests data.
-const CARD_PAGE_SIZE = 20, TEXT_PAGE_SIZE = 4096;
-function textPages(target, text, controls) {
+const CARD_PAGE_SIZE = 20, TEXT_PAGE_SIZE = 4096, BODY_BREAK_LIMIT = 8;
+function textPages(target, text, controls, wrapBody = false) {
   let offset = 0; const previous = [];
   function show() {
     let end = Math.min(offset + TEXT_PAGE_SIZE, text.length);
     if (end < text.length && /[\uD800-\uDBFF]/.test(text[end - 1]) && /[\uDC00-\uDFFF]/.test(text[end])) end--;
-    target.textContent = text.slice(offset, end);
+    if (wrapBody) {
+      // Keep CRLF together and cap break nodes as well as characters.
+      if (end < text.length && text[end - 1] === '\r' && text[end] === '\n') end--;
+      const candidate = text.slice(offset, end), breaks = /\r\n|\r|\n/g;
+      let match, count = 0;
+      while ((match = breaks.exec(candidate))) if (++count === BODY_BREAK_LIMIT) { end = offset + match.index + match[0].length; break; }
+      target.replaceChildren();
+      text.slice(offset, end).split(/\r\n|\r|\n/).forEach((line, index) => {
+        if (index) target.append(document.createElement('br'));
+        target.append(document.createTextNode(line));
+      });
+    } else target.textContent = text.slice(offset, end);
     controls.replaceChildren(node('p', 'Text units (UTF-16) ' + (text.length ? offset + 1 : 0) + '–' + end + ' of ' + text.length));
     if (offset) controls.append(button('Previous text', () => { offset = previous.pop(); show(); }));
     if (end < text.length) controls.append(button('Next text', () => { previous.push(offset); offset = end; show(); }));
@@ -641,8 +652,8 @@ function card(item, forcedPostId) {
   const readableComment = isComment && validId(item.id) && typeof item.content === 'string' && item.content.trim() && !/^\[(deleted|removed)\]$/i.test(item.content.trim()) && item.deleted !== true && item.is_deleted !== true && !item.deleted_at;
   el.append(node('h3', String(item.title || (isComment ? 'Comment' : 'Post'))));
   el.append(node('p', [item.submolt?.name ? 'm/' + item.submolt.name : '', item.author?.name || '', item.created_at || '', item.upvotes != null ? '▲ ' + item.upvotes : ''].filter(Boolean).join(' · '), 'meta'));
-  const body = node('pre', '', 'body'), bodyControls = node('div', '');
-  textPages(body, String(item.content || ''), bodyControls);
+  const body = node('div', '', 'body'), bodyControls = node('div', '');
+  textPages(body, String(item.content || ''), bodyControls, true);
   el.append(body, bodyControls);
   el.append(node('p', 'ID: ' + String(item.id || ''), 'id'));
   if (typeof item.url === 'string') el.append(node('p', 'Linked URL: ' + item.url, 'body'));

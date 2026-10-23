@@ -17,19 +17,20 @@ function fixture(source = html) {
   vm.runInNewContext(source.slice(start,end),context);
   return {context,$};
 }
-const walk = element => [element,...element.children.flatMap(walk)];
+const walk = element => [element,...(element.children || []).flatMap(walk)];
 const click = (root,label) => { const b=walk(root).find(e=>e.tagName==='button'&&e.textContent===label); assert.ok(b,label); b.events.click(); };
+const bodyText = body => body.children.map(n => n.tagName === 'br' ? '\n' : n.textContent).join('');
 test('near-cap newline body stays bounded and all characters remain reachable', () => {
   const {context}=fixture();
   const text='\n'.repeat(900000)+'終😀<script>literal</script>';
   const tree=context.card({id:'p',content:text});
   const body=tree.children.find(e=>e.className==='body');
-  let reconstructed=body.textContent, maxNodes=0;
+  let reconstructed=bodyText(body), maxNodes=0;
   while(walk(tree).some(e=>e.textContent==='Next text')) {
-    click(tree,'Next text'); reconstructed+=body.textContent; maxNodes=Math.max(maxNodes,walk(tree).length);
+    click(tree,'Next text'); reconstructed+=bodyText(body); maxNodes=Math.max(maxNodes,walk(tree).length);
   }
   assert.equal(reconstructed,text); assert.ok(maxNodes<50);
-  click(tree,'Previous text'); assert.ok(body.textContent.length<=4096);
+  click(tree,'Previous text'); assert.ok(bodyText(body).length<=4096);
 });
 test('wide and deep replies, over 100 roots, previous navigation and API cursor are preserved', () => {
   const {context,$}=fixture();
@@ -90,4 +91,38 @@ test('JSON null remains exact inspectable data rather than the cleared sentinel'
   context.setRaw(undefined); $('raw-toggle').events.click();
   assert.equal($('raw-response').textContent,'None');
   assert.equal($('raw-controls').children.length,0);
+});
+
+test('paged long paragraphs retain native narrow-display wrapping without CSS', () => {
+  const {context}=fixture();
+  const text='A normal wrapping paragraph with spaces. '.repeat(400);
+  const tree=context.card({id:'p',content:text});
+  const body=tree.children.find(e=>e.className==='body');
+  assert.equal(body.tagName,'div');
+  assert.equal(body.children.some(e=>e.tagName==='pre'),false);
+  assert.ok(bodyText(body).length<=4096);
+  let all=bodyText(body);
+  while(walk(tree).some(e=>e.textContent==='Next text')) {click(tree,'Next text'); all+=bodyText(body);}
+  assert.equal(all,text);
+  assert.doesNotMatch(html, /<style\b|\.style\b|white-space/);
+});
+test('wrapping bodies preserve CRLF boundaries, Unicode and bounded breaks across navigation', () => {
+  const {context}=fixture();
+  const text='a'.repeat(4095)+'\r\n'+'😀'+'\r\n'.repeat(40)+'tail';
+  const tree=context.card({id:'p',content:text}), body=tree.children.find(e=>e.className==='body');
+  const sections=[bodyText(body)];
+  do {
+    assert.ok(body.children.filter(e=>e.tagName==='br').length<=8);
+    assert.ok(body.children.length<=17); assert.ok(bodyText(body).length<=4096);
+    if(!walk(tree).some(e=>e.textContent==='Next text')) break;
+    click(tree,'Next text'); sections.push(bodyText(body));
+  } while(true);
+  assert.equal(sections.join(''),text.replace(/\r\n/g,'\n'));
+  for(let i=sections.length-2;i>=0;i--) {click(tree,'Previous text'); assert.equal(bodyText(body),sections[i]);}
+});
+test('twenty newline-heavy bodies remain globally node bounded', () => {
+  const {context,$}=fixture();
+  context.display({comments:Array.from({length:20},(_,i)=>({id:'c'+i,content:'\n'.repeat(10000)}))},'comments',{id:'p'});
+  assert.equal($('results').children.filter(e=>e.className==='card').length,20);
+  assert.ok(walk($('results')).length<1000);
 });
