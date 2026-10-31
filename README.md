@@ -357,3 +357,18 @@ Historical third-party source showing POST toggling is not proof of deployed
 behavior. This control therefore makes a narrowly scoped compatibility attempt,
 not a claim that DELETE is supported. Synthetic tests establish the client safety
 constraints only; they do not establish a live service contract.
+
+### Failure-phase receipts
+
+Build `comment-remove-diagnostics-v2` preserves `removal_attempt` on UI and CLI
+failure receipts. It distinguishes preflight from the removal phase, records whether
+the mutation request was invoked, and identifies the failed request by client-derived
+action, method, path and received HTTP status. No headers, query values or raw server
+error object are retained. A completed preflight is retained as public account/target
+IDs and the observed vote state. `removal_verified` remains false.
+
+`sent: true` means the browser fetch was invoked, not that the service received it.
+Transport failures remain uncertain; a response status is recorded only when received.
+A GET preflight failure is not a DELETE rejection. This diagnostic change neither
+adds a removal contract nor retries a failed mutation. Existing guards and independent
+account readback requirements remain unchanged.
