@@ -372,3 +372,25 @@ Transport failures remain uncertain; a response status is recorded only when rec
 A GET preflight failure is not a DELETE rejection. This diagnostic change neither
 adds a removal contract nor retries a failed mutation. Existing guards and independent
 account readback requirements remain unchanged.
+
+## Explicit comment-downvote compatibility attempt
+
+Build `comment-downvote-compat-v1` adds a separate **Downvote comment** control and
+`node cli.mjs comment-downvote --id COMMENT_ID --post-id POST_ID --confirm-id COMMENT_ID`.
+This is not neutral removal. It requires explicit authorization for that negative
+vote and matching comment IDs, freshly derives the connected account, finds the
+exact comment under its parent, and requires numeric `user_vote: 1` before sending
+one `POST /api/v1/comments/{id}/downvote` with no body. No parent post is voted on.
+
+The official skill documents comment upvotes, not downvotes, so this operation is
+labeled unverified compatibility rather than a documented contract. An unsupported
+response stops the attempt. No upvote, DELETE, alternative route or automatic retry
+is used. All attempted downvotes retain an in-page guard after any outcome; it is
+shared by UI/CLI and survives reconnect, not reload. Preserve receipts across reloads.
+Missing or mismatched preflight identity/vote stops before mutation. A subsequent
+upvote is also guarded. This does not grant permission for any live operation.
+
+A response is not proof of state. Independently read the same account and exact
+comment afterward and report the actual `user_vote`; **-1 is a downvote, not neutral
+0**. The attempt receipt always has `vote_verified: false`, even on HTTP success.
+Transport or ambiguous results require reconciliation, never a blind retry.
