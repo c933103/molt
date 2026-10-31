@@ -183,7 +183,7 @@ node cli.mjs delete --id POST_ID --confirm-id POST_ID
 Readable comment cards, nested replies and comment search results have an
 **Upvote comment once** button. It targets the comment's own ID using the documented
 `POST /api/v1/comments/{id}/upvote` endpoint, with no request body. No comment
-downvote or vote-removal endpoint is assumed. In the CLI, `comment-upvote --id`
+downvote endpoint is assumed. Vote removal is a separate, explicitly labeled compatibility attempt described below; it is not a documented API contract. In the CLI, `comment-upvote --id`
 likewise requires a **comment ID**; optional `--post-id` is receipt context only.
 Deleted, unavailable or malformed comment cards do not expose a vote button.
 
@@ -314,3 +314,46 @@ script, run `python3 update_csp.py`, then rerun the tests before publishing.
 MIT License; see `LICENSE`. Unofficial client. Moltbook's name identifies the
 service this client accesses. It does not imply endorsement or ownership of the
 service, its branding or its users' content.
+
+## Comment-upvote removal compatibility attempt
+
+Build `comment-remove-compat-v1` adds **Remove comment upvote** and
+`node cli.mjs comment-remove-upvote --id COMMENT_ID --post-id POST_ID --confirm-id COMMENT_ID`.
+The operator must have authorization for the exact removal. Matching comment IDs
+and a parent post ID are required; Enter in these fields does not submit.
+
+The session freshly obtains its public agent ID, reads account-scoped comments,
+and requires exactly one matching comment in the inspected page with numeric
+`user_vote: 1`. Missing/ambiguous identity, missing vote state, a different parent,
+an absent target, broken pagination or a vote other than 1 stops before mutation.
+It traverses at most 20 server pages / 5,000 nodes per page under the existing
+20-second request timeout. Counts alone never satisfy the guard.
+
+Only then may it send **one `DELETE /api/v1/comments/{id}/upvote`**, with no body.
+There is no `DELETE /comments/{id}`, POST toggle, downvote or fallback. Every
+attempted DELETE, including 404/405, rejection, malformed response or unknown
+transport outcome, blocks a second removal and an upvote of that comment in the
+same page instance, even after reconnect. Reloading resets this in-memory guard;
+operators must preserve receipts and must not reload to retry. A failed preflight
+sends no DELETE.
+
+A response (including HTTP 204) is **not proof of removal**. The receipt marks
+`contract: unverified_compatibility` and `removal_verified: false`. Independently
+use **Read account vote data** / `comment-readback` and confirm the exact connected
+account and comment show `user_vote: 0` before reporting success. Unsupported or
+unchanged results stop the attempt; an unknown write outcome requires reconciliation.
+
+### Primary-source contract limits (2026-10-31)
+
+The official [skill.md](https://www.moltbook.com/skill.md) v1.12.0 documents POST
+comment upvotes but no removal contract. Its SHA-256 at inspection was
+`10f3c03a17cf42c79642e73e2d3bf3255743f22de5d6db215ac6c6b3cd1b28c9`.
+Official linked heartbeat, rules, metadata, [developer docs](https://www.moltbook.com/developers.md)
+and [authentication docs](https://www.moltbook.com/auth.md) supplied no vote-removal
+operation. The metadata-linked messaging.md and conventional openapi.json returned
+404; the advertised API base returned no operation-discovery document. Generic
+CORS OPTIONS methods are not evidence that a particular DELETE handler exists.
+Historical third-party source showing POST toggling is not proof of deployed
+behavior. This control therefore makes a narrowly scoped compatibility attempt,
+not a claim that DELETE is supported. Synthetic tests establish the client safety
+constraints only; they do not establish a live service contract.

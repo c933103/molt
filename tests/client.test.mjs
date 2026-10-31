@@ -604,3 +604,111 @@ test('comment upvote remains serialized and a disconnected late response cannot 
   session.disconnect(); finish(response({success:true,echo:KEY}));
   await assert.rejects(pending,e=>e.unknownOutcome); assert.equal(session.commentVoteAttempted('reply'),true); assert.equal(calls,1);
 });
+
+test('removal uses only the exact upvote subresource after a fresh scoped preflight', async () => {
+  const calls=[]; const {session,operation}=setup(async (url,options)=>{
+    calls.push([url,options]);
+    if(url.endsWith('/agents/me')) return response({agent:{id:'agent-fixture'}});
+    if(options.method==='DELETE') return response({success:true,action:'removed',echo:KEY});
+    const cursor=new URL(url).searchParams.get('cursor');
+    return response(cursor ? {comments:[{id:'root',replies:[{id:'reply',post_id:'parent',user_vote:1}]}],has_more:false} : {comments:[],has_more:true,next_cursor:'page-2'});
+  });
+  const p={id:'reply',post_id:'parent',confirm_id:'reply'};
+  const op=operation('commentRemoveUpvote',p);
+  assert.equal(op.url,'https://www.moltbook.com/api/v1/comments/reply/upvote'); assert.equal(op.method,'DELETE'); assert.equal(op.body,undefined);
+  const data=await session.request('commentRemoveUpvote',p);
+  assert.equal(calls.length,4); assert.equal(calls[0][0],'https://www.moltbook.com/api/v1/agents/me');
+  for(const [url,opts] of calls.slice(1,3)) { assert.equal(opts.method,'GET'); assert.equal(new URL(url).searchParams.get('requester_id'),'agent-fixture'); }
+  assert.equal(calls[3][0],op.url); assert.equal(calls[3][1].method,'DELETE'); assert.equal(calls[3][1].body,undefined);
+  assert.equal(data.preflight.user_vote,1); assert.equal(data.preflight.comment_id,'reply'); assert.equal(data.preflight.post_id,'parent'); assert.equal(data.preflight.requester_id,'agent-fixture');
+  assert.equal(data.contract,'unverified_compatibility'); assert.equal(data.removal_verified,false); assert.equal(data.response.echo,'[credential removed]');
+  await assert.rejects(session.request('commentRemoveUpvote',p),/already attempted/);
+  await assert.rejects(session.request('commentUpvote',{id:'reply'}),/already attempted/);
+  assert.equal(calls.length,4);
+});
+
+test('removal rejects invalid target, confirmation and caller account overrides before network access', async () => {
+  let calls=0;const {session}=setup(async()=>{calls++;return response();});
+  const base={id:'reply',post_id:'parent',confirm_id:'reply'};
+  for(const extra of [{id:'../parent',confirm_id:'../parent'},{id:'reply/upvote',confirm_id:'reply/upvote'},{post_id:'../parent'},{post_id:undefined},{confirm_id:'parent'},{requester_id:'other'},{cursor:'page'},{post_id:KEY}])
+    await assert.rejects(session.request('commentRemoveUpvote',{...base,...extra}));
+  assert.equal(calls,0);
+});
+
+test('removal never infers an own upvote from counts, ambiguous targets or unknown vote fields', async () => {
+  for(const fields of [{user_vote:0},{user_vote:-1},{user_vote:'1'},{user_vote:null},{upvotes:100},{user_vote:1,post_id:'other'},{user_vote:1,post:{id:'other'}}]) {
+    const calls=[];const {session}=setup(async(url,opts)=>{calls.push(opts.method);return response(url.endsWith('/agents/me')?{agent:{id:'agent'}}:{comments:[{id:'reply',...fields}]});});
+    await assert.rejects(session.request('commentRemoveUpvote',{id:'reply',post_id:'parent',confirm_id:'reply'}),/No removal sent/);
+    assert.deepEqual(calls,['GET','GET']); assert.equal(session.commentRemovalAttempted('reply'),false);
+  }
+  for(const data of [{comments:[]},{comments:[{id:'reply',user_vote:1},{id:'reply',user_vote:1}]},{comments:[],has_more:true,next_cursor:''},{comments:[],has_more:true,next_cursor:'repeat'},{unexpected:[]}]) {
+    const calls=[];const {session}=setup(async(url,opts)=>{calls.push(opts.method);return response(url.endsWith('/agents/me')?{agent:{id:'agent'}}:data);});
+    await assert.rejects(session.request('commentRemoveUpvote',{id:'reply',post_id:'parent',confirm_id:'reply'}),/No removal sent/);
+    assert.equal(calls.includes('DELETE'),false);
+  }
+});
+
+test('every DELETE outcome is guarded without retry or fallback and never claims removal', async () => {
+  for(const outcome of ['removed','unchanged','204','404','405','500','network','malformed','non-json']) {
+    const calls=[];const {session}=setup(async(url,opts)=>{
+      calls.push(opts.method);
+      if(opts.method!=='DELETE') return response(url.endsWith('/agents/me')?{agent:{id:'agent'}}:{comments:[{id:'reply',user_vote:1}]});
+      if(outcome==='network') throw new Error('synthetic failure');
+      if(outcome==='204') return new Response(null,{status:204});
+      if(/^\d+$/.test(outcome)) return response({success:false,message:'unsupported '+KEY},Number(outcome));
+      if(outcome==='malformed') return new Response('{',{headers:{'content-type':'application/json'}});
+      if(outcome==='non-json') return new Response('unsupported',{headers:{'content-type':'text/plain'}});
+      return response({success:true,action:outcome});
+    });
+    const p={id:'reply',post_id:'parent',confirm_id:'reply'};
+    if(['removed','unchanged','204'].includes(outcome)) assert.equal((await session.request('commentRemoveUpvote',p)).removal_verified,false);
+    else await assert.rejects(session.request('commentRemoveUpvote',p),err=>err.unknownOutcome===['500','network','malformed','non-json'].includes(outcome)&&!err.message.includes(KEY));
+    session.disconnect();session.connect(KEY);
+    await assert.rejects(session.request('commentRemoveUpvote',p),/already attempted/);
+    await assert.rejects(session.request('commentUpvote',{id:'reply'}),/already attempted/);
+    assert.deepEqual(calls,['GET','GET','DELETE'],outcome);
+  }
+});
+
+test('disconnect during removal preflight prevents DELETE; disconnect after DELETE is unknown and guarded', async () => {
+  for(const stage of ['preflight','mutation']) {
+    let finish;const calls=[];const {session}=setup(async(url,opts)=>{
+      calls.push(opts.method);
+      if(url.endsWith('/agents/me')) return response({agent:{id:'agent'}});
+      if(stage==='preflight'||opts.method==='DELETE') return new Promise(resolve=>{finish=resolve;});
+      return response({comments:[{id:'reply',user_vote:1}]});
+    });
+    const pending=session.request('commentRemoveUpvote',{id:'reply',post_id:'parent',confirm_id:'reply'});
+    while(!finish) await new Promise(resolve=>setImmediate(resolve));
+    await assert.rejects(session.request('me'),/already running/);
+    session.disconnect();finish(response(stage==='preflight'?{comments:[{id:'reply',user_vote:1}]}:{success:true,action:'removed'}));
+    await assert.rejects(pending,err=>err.unknownOutcome===(stage==='mutation'));
+    assert.deepEqual(calls,stage==='preflight'?['GET','GET']:['GET','GET','DELETE']);
+    assert.equal(session.commentRemovalAttempted('reply'),stage==='mutation');
+  }
+});
+
+test('removal snapshots the exact target before asynchronous preflight', async () => {
+  let release;const calls=[];const {session}=setup(async(url,opts)=>{
+    calls.push([url,opts.method]);
+    if(url.endsWith('/agents/me')) return new Promise(resolve=>{release=resolve;});
+    return response(opts.method==='DELETE'?{success:true}:{comments:[{id:'reply',user_vote:1}]});
+  });
+  const p={id:'reply',post_id:'parent',confirm_id:'reply'};const pending=session.request('commentRemoveUpvote',p);
+  p.id='other';p.post_id='wrong';p.confirm_id='other';release(response({agent:{id:'agent'}}));
+  const result=await pending;assert.equal(result.comment_id,'reply');assert.equal(result.post_id,'parent');
+  assert.match(calls[1][0],/posts\/parent\/comments/);assert.equal(calls[2][0],'https://www.moltbook.com/api/v1/comments/reply/upvote');
+});
+
+test('removal fails closed on missing identity, wrong response parent and bounded pagination', async () => {
+  for(const mode of ['identity','parent','pages','nodes']) {
+    let pages=0;const methods=[];const {session}=setup(async(url,opts)=>{
+      methods.push(opts.method);
+      if(url.endsWith('/agents/me')) return response({agent:{id:mode==='identity'?undefined:'agent'}});
+      pages++;
+      return response(mode==='parent'?{post_id:'wrong',comments:[{id:'reply',user_vote:1}]}:mode==='nodes'?{comments:Array.from({length:5001},()=>({id:'other'}))}:{comments:[],has_more:true,next_cursor:'page-'+pages});
+    });
+    await assert.rejects(session.request('commentRemoveUpvote',{id:'reply',post_id:'parent',confirm_id:'reply'}),/No removal sent/);
+    assert.equal(methods.includes('DELETE'),false);if(mode==='pages')assert.equal(pages,20);if(mode==='identity')assert.equal(pages,0);
+  }
+});

@@ -4,12 +4,13 @@
   <meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="referrer" content="no-referrer">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-Wch4GUb31acod+5V7VsI1V7qV1MKzN/e0WT9252pP2k='; style-src 'none'; connect-src https://www.moltbook.com; base-uri 'none'; form-action 'none'; object-src 'none'">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-cfbLQ4fqwy4E69s2FUm7gpKsN+W5ysGfJpdFa5fYFmg='; style-src 'none'; connect-src https://www.moltbook.com; base-uri 'none'; form-action 'none'; object-src 'none'">
   <title>Moltbook browser desk</title>
 </head>
 <body>
 <h1>Moltbook browser desk</h1>
 <p>Read, search and publish through Moltbook's API.</p>
+<p id="client-build">Build: comment-remove-compat-v1</p>
 <noscript><p>The page's markup uses HTML 4.0. API operations and encrypted saved credentials require JavaScript and a modern HTTPS browser. These buttons do not submit credentials without JavaScript.</p></noscript>
 <p><strong id="connection">Not connected</strong></p>
 <div id="connect-form">
@@ -52,6 +53,7 @@ node cli.mjs posts --sort new</pre>
   <button id="view-browse" type="button">Browse</button>
   <button id="view-compose" type="button">New post</button>
   <button id="view-reply" type="button">Comment</button>
+  <button id="view-remove-vote" type="button">Remove comment upvote</button>
   <button id="view-delete" type="button">Delete post</button>
   <button id="view-verify" type="button">Verification</button>
   <button id="view-account" type="button">Account</button>
@@ -99,6 +101,15 @@ node cli.mjs posts --sort new</pre>
     <p><label for="comment-content">Comment</label><br><textarea id="comment-content" rows="6" cols="40"></textarea></p>
     <p><button id="comment-button" type="button">Publish comment</button></p>
   </div>
+</div>
+<hr>
+<div id="remove-vote-panel">
+  <h2>Remove a comment upvote: compatibility attempt</h2>
+  <p>This is not a documented Moltbook removal contract. After checking this account's current vote is exactly 1, this sends one DELETE to /comments/COMMENT_ID/upvote only. It never calls the comment-deletion resource, downvotes, toggles with POST or retries automatically. A successful response alone does not prove removal: read account vote data afterward and verify the same comment has user_vote 0.</p>
+  <p><label for="remove-vote-post-id">Parent post ID</label><br><input id="remove-vote-post-id" type="text" size="40" maxlength="80"></p>
+  <p><label for="remove-vote-id">Comment ID</label><br><input id="remove-vote-id" type="text" size="40" maxlength="80"></p>
+  <p><label for="remove-vote-confirm-id">Confirm the same comment ID</label><br><input id="remove-vote-confirm-id" type="text" size="40" maxlength="80"></p>
+  <p><button id="remove-vote-button" type="button">Attempt removing this comment upvote once</button></p>
 </div>
 <hr>
 <div id="delete-panel">
@@ -149,7 +160,7 @@ node cli.mjs posts --sort new</pre>
 const API_ORIGIN = 'https://www.moltbook.com';
 const API_BASE = API_ORIGIN + '/api/v1';
 const RESPONSE_LIMIT = 2 * 1024 * 1024;
-const MUTATIONS = new Set(['createPost', 'comment', 'upvote', 'downvote', 'commentUpvote', 'verify', 'deletePost']);
+const MUTATIONS = new Set(['createPost', 'comment', 'upvote', 'downvote', 'commentUpvote', 'commentRemoveUpvote', 'verify', 'deletePost']);
 class ClientError extends Error {
   constructor(message, unknownOutcome = false) { super(message); this.name = 'ClientError'; this.unknownOutcome = unknownOutcome; }
 }
@@ -445,6 +456,12 @@ function operation(action, p = {}) {
       path = '/comments/' + checkedId(p.id) + '/upvote'; method = 'POST';
       if (p.post_id !== undefined) checkedId(p.post_id); // Receipt context only, never the vote target.
       break;
+    case 'commentRemoveUpvote':
+      path = '/comments/' + checkedId(p.id) + '/upvote'; method = 'DELETE';
+      checkedId(p.post_id);
+      if (p.confirm_id !== p.id) throw new ClientError('Confirm removal by entering the same comment ID twice.');
+      if (p.requester_id !== undefined || p.cursor !== undefined) throw new ClientError('Removal derives its account and pagination internally.');
+      break;
     case 'verify':
       path = '/verify'; method = 'POST';
       if (typeof p.answer !== 'string' || !/^-?\d+\.\d{2}$/.test(p.answer) || p.answer.length > 32) throw new ClientError('Use an answer with two decimal places.');
@@ -457,7 +474,7 @@ function operation(action, p = {}) {
   return {url:url.href, method, body};
 }
 class MoltbookSession {
-  #key = ''; #busy = false; #controller = null; #epoch = 0; #commentVotes = new Set();
+  #key = ''; #busy = false; #controller = null; #epoch = 0; #commentVotes = new Set(); #commentRemovals = new Set();
   connect(value) {
     if (typeof value !== 'string' || !KEY_PATTERN.test(value)) throw new ClientError('Enter the API key itself, without a Bearer prefix.');
     if (this.#busy) throw new ClientError('Wait for the current request before connecting.');
@@ -466,7 +483,8 @@ class MoltbookSession {
   get connected() { return Boolean(this.#key); }
   usesKey(value) { return this.connected && this.#key === value; }
   get busy() { return this.#busy; }
-  commentVoteAttempted(id) { return this.#commentVotes.has(id); }
+  commentVoteAttempted(id) { return this.#commentVotes.has(id) || this.#commentRemovals.has(id); }
+  commentRemovalAttempted(id) { return this.#commentRemovals.has(id); }
   disconnect() { this.#key = ''; this.#epoch++; if (this.#controller) this.#controller.abort(); }
   recoveryArchive(crypt) {
     if (!this.connected) throw new ClientError('Connect this browser before downloading a recovery ZIP.');
@@ -488,15 +506,24 @@ class MoltbookSession {
     if (!this.connected) throw new ClientError('Connect this browser first.');
     if (this.#busy) throw new ClientError('A request is already running.');
     if (['comments','commentReadback'].includes(action) && params.requester_id !== undefined) throw new ClientError('Use commentReadback to read vote data for the connected account. A requester ID cannot be supplied.');
+    if (action === 'commentRemoveUpvote') params = {...params}; // Snapshot the confirmed target before any awaited preflight.
     const op = operation(action, params);
     if (op.url.includes(this.#key) || (op.body && JSON.stringify(op.body).includes(this.#key))) throw new ClientError('A request cannot include the API key in its URL or content.');
     if (action === 'commentUpvote' && this.commentVoteAttempted(params.id)) throw new ClientError('This comment vote was already attempted in this page. Read back the account data before considering any further action; repeat-vote behavior is undocumented.');
+    if (action === 'commentRemoveUpvote' && this.commentRemovalAttempted(params.id)) throw new ClientError('Removal was already attempted for this comment in this page. No retry or fallback is allowed; read account vote data.');
     this.#busy = true;
     const controller = new AbortController(); this.#controller = controller;
     const epoch = this.#epoch;
     const timeout = setTimeout(() => controller.abort(), 20000);
     if (action === 'commentUpvote') this.#commentVotes.add(params.id);
     try {
+      if (action === 'commentRemoveUpvote') {
+        const preflight = await this.#removalPreflight(params, controller, epoch);
+        // Retain this guard after every DELETE outcome, including an explicit rejection.
+        this.#commentRemovals.add(params.id);
+        const response = await this.#send(action, params, op, controller, epoch);
+        return {type:'comment_upvote_removal_attempt', contract:'unverified_compatibility', comment_id:params.id, post_id:params.post_id, preflight, response, removal_verified:false, note:'No removal is claimed. Independently read this account vote data and verify this exact comment has user_vote 0.'};
+      }
       if (action === 'commentReadback') {
         const identity = await this.#send('me', {}, operation('me'), controller, epoch);
         const id = identity?.agent?.id;
@@ -512,6 +539,37 @@ class MoltbookSession {
       clearTimeout(timeout); this.#busy = false; this.#controller = null;
     }
   }
+  async #removalPreflight(params, controller, epoch) {
+    if (params.post_id.includes(this.#key)) throw new ClientError('A request cannot include the API key in its URL or content.');
+    const identity = await this.#send('me', {}, operation('me'), controller, epoch);
+    const requester = identity?.agent?.id;
+    if (typeof requester !== 'string' || !/^[A-Za-z0-9_-]{1,80}$/.test(requester) || requester.includes(this.#key)) throw new ClientError('Connected account identity is unavailable. No removal sent.');
+    let cursor; const cursors = new Set();
+    for (let page = 0; page < 20; page++) {
+      const p = {id:params.post_id, requester_id:requester, ...(cursor ? {cursor} : {})};
+      const data = await this.#send('comments', p, operation('comments', p), controller, epoch);
+      if (!Array.isArray(data?.comments)) throw new ClientError('Comment readback is unavailable. No removal sent.');
+      if (data.post_id !== undefined && data.post_id !== params.post_id) throw new ClientError('Comment readback parent does not match. No removal sent.');
+      const stack = [...data.comments], matches = []; let visited = 0;
+      while (stack.length) {
+        if (++visited > 5000) throw new ClientError('Comment readback exceeds the inspection bound. No removal sent.');
+        const item = stack.pop();
+        if (!item || typeof item !== 'object') continue;
+        if (item.id === params.id) matches.push(item);
+        if (Array.isArray(item.replies)) stack.push(...item.replies);
+      }
+      if (matches.length) {
+        const item = matches[0];
+        if (matches.length !== 1 || (item.post_id !== undefined && item.post_id !== params.post_id) || (item.post?.id !== undefined && item.post.id !== params.post_id)) throw new ClientError('Comment identity is ambiguous. No removal sent.');
+        if (item.user_vote !== 1) throw new ClientError('Current account user_vote is not exactly 1. No removal sent.');
+        return {requester_id:requester, comment_id:params.id, post_id:params.post_id, user_vote:1, observed_at:new Date().toISOString()};
+      }
+      if (data.has_more !== true) break;
+      if (typeof data.next_cursor !== 'string' || !data.next_cursor || cursors.has(data.next_cursor)) throw new ClientError('Comment pagination cannot be reconciled. No removal sent.');
+      cursor = checkedText(data.next_cursor, 'cursor', 4096); cursors.add(cursor);
+    }
+    throw new ClientError('Exact comment was not found within the bounded account readback. No removal sent.');
+  }
   async #send(action, params, op, controller, epoch) {
     let receivedResponse = false;
     try {
@@ -522,6 +580,7 @@ class MoltbookSession {
       if (epoch !== this.#epoch) throw new ClientError('Disconnected. The pending response was discarded.', MUTATIONS.has(action));
       receivedResponse = true;
       if (res.url && new URL(res.url).origin !== API_ORIGIN) throw new ClientError('Unexpected API response origin.', MUTATIONS.has(action));
+      if (action === 'commentRemoveUpvote' && res.status === 204) return {http_status:204, note:'Empty response; removal still requires independent vote readback.'};
       if (action === 'deletePost' && res.status === 204) return {success:true, deleted_post_id:params.id};
       if (!res.headers.get('content-type')?.toLowerCase().includes('application/json')) throw new ClientError('Moltbook returned a non-JSON response.', MUTATIONS.has(action));
       const advertised = Number(res.headers.get('content-length') || 0);
@@ -690,7 +749,7 @@ function display(data, action, params) {
 }
 function voteTarget(action, params) {
   const safeId = id => typeof id === 'string' && /^[A-Za-z0-9_-]{1,80}$/.test(id) ? session.scrub(id) : null;
-  return action === 'commentUpvote'
+  return ['commentUpvote','commentRemoveUpvote'].includes(action)
     ? {type:'comment_vote', action, comment_id:safeId(params.id), ...(params.post_id !== undefined ? {post_id:safeId(params.post_id)} : {})}
     : {action, post_id:safeId(params.id)};
 }
@@ -702,7 +761,8 @@ function recordVote(target, state, details = {}) {
 async function run(action, params = {}, show = true) {
   if (session.busy) return null;
   if (action === 'commentUpvote' && session.commentVoteAttempted(params.id)) { notice('This comment vote was already attempted in this page. Read account vote data; no repeat vote was sent.'); return null; }
-  const voteReceipt = !show && ['upvote','downvote','commentUpvote'].includes(action);
+  if (action === 'commentRemoveUpvote' && session.commentRemovalAttempted(params.id)) { notice('Removal already attempted; no retry or fallback was sent. Read account vote data.'); return null; }
+  const voteReceipt = !show && ['upvote','downvote','commentUpvote','commentRemoveUpvote'].includes(action);
   const target = voteReceipt ? voteTarget(action, params) : null;
   const record = (state, details = {}) => {
     if (voteReceipt) recordVote(target, state, details);
@@ -729,7 +789,7 @@ function action(group, control, handler) {
     if (ev.key === 'Enter' && ev.target.tagName === 'INPUT' && !$(control).disabled) { ev.preventDefault(); handler(); }
   });
 }
-['browse','compose','reply','delete','verify','account'].forEach(name => $('view-' + name).addEventListener('click', () => view(name)));
+['browse','compose','reply','remove-vote','delete','verify','account'].forEach(name => $('view-' + name).addEventListener('click', () => view(name)));
 async function connectKey(key, generation, downloadRecovery = false) {
   if (generation !== connectionGeneration) return;
   try { session.connect(key); } catch (err) { notice(err.message, 'error'); return; }
@@ -830,6 +890,7 @@ action('open-form', 'open-button', () => run('post', {id:value('post-id').trim()
 action('post-form', 'post-button', async () => { const data = await run('createPost', {submolt:value('post-submolt').trim(), title:value('post-title'), content:value('post-content')}); if (data) { $('post-title').value = ''; $('post-content').value = ''; } });
 action('comment-form', 'comment-button', async () => { const data = await run('comment', {id:value('comment-post-id').trim(), parent_id:value('parent-id').trim(), content:value('comment-content')}); if (data) $('comment-content').value = ''; });
 // Destructive actions require an explicit button click, never Enter in a field.
+$('remove-vote-button').addEventListener('click', () => run('commentRemoveUpvote', {id:value('remove-vote-id').trim(), post_id:value('remove-vote-post-id').trim(), confirm_id:value('remove-vote-confirm-id').trim()}, false));
 $('delete-button').addEventListener('click', async () => {
   const data = await run('deletePost', {id:value('delete-post-id').trim(), confirm_id:value('delete-confirm-id').trim()});
   if (data) {
@@ -858,14 +919,15 @@ window.addEventListener('pagehide', () => { connectionGeneration++; connectionBu
 window.addEventListener('pageshow', () => { connectionReady = restoreConnection(); });
 // The CLI invokes this interface in the page. No credential-reading operation is exposed.
 Object.defineProperty(window, 'moltbookDesk', {value:Object.freeze({
-  version:1,
+  version:1, build:'comment-remove-compat-v1',
   async execute(action, params = {}) {
     await connectionReady;
     if (connectionBusy) return {ok:false, error:'The browser connection is being updated. Wait for it to finish.'};
     if (action === 'connection') return {ok:true, data:{connected:session.connected, busy:session.busy}};
     // Comment mutations keep the surrounding view and expose the same typed receipt as the UI.
-    const target = action === 'commentUpvote' ? voteTarget(action, params) : null;
-    if (target && (session.busy || session.commentVoteAttempted(params.id))) return {ok:false, error:session.busy ? 'A request is already running.' : 'This comment vote was already attempted in this page. Read account vote data; no repeat vote was sent.', unknownOutcome:false};
+    const target = ['commentUpvote','commentRemoveUpvote'].includes(action) ? voteTarget(action, params) : null;
+    if (action === 'commentRemoveUpvote' && session.commentRemovalAttempted(params.id)) return {ok:false, error:'Removal already attempted. No retry or fallback is allowed; read account vote data.', unknownOutcome:false};
+    if (target && (session.busy || (action === 'commentUpvote' && session.commentVoteAttempted(params.id)))) return {ok:false, error:session.busy ? 'A request is already running.' : 'This comment vote was already attempted in this page. Read account vote data; no repeat vote was sent.', unknownOutcome:false};
     if (target) recordVote(target, 'pending');
     try {
       const pending = session.request(action, params); sync();
