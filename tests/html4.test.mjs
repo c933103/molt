@@ -593,3 +593,20 @@ test('a null API response can be inspected and Disconnect clears it without anot
   assert.equal(fixture.elements.get('raw-response').textContent,'None');
   assert.equal(requests,2);
 });
+
+test('explicit removal UI has no Enter submit and shares exact guard and receipt with CLI', async () => {
+  const fixture=pageFixture({fetch:async(url,opts)=>jsonResponse(opts.method==='DELETE'?{success:true,action:'removed'}:url.includes('/comments?')?{comments:[{id:'reply',user_vote:1}]}:{agent:{id:'agent'}})});
+  await fixture.connect();
+  assert.match(html,/Build: comment-remove-compat-v1/);
+  assert.equal(fixture.elements.get('remove-vote-panel').events.keydown,undefined);
+  for(const [id,value] of [['remove-vote-id','reply'],['remove-vote-confirm-id','reply'],['remove-vote-post-id','parent']]) fixture.elements.get(id).value=value;
+  await fixture.elements.get('remove-vote-button').events.click();
+  const receipt=readRaw(fixture);assert.equal(receipt.action,'commentRemoveUpvote');assert.equal(receipt.comment_id,'reply');assert.equal(receipt.post_id,'parent');
+  assert.equal(receipt.response.removal_verified,false);assert.equal(receipt.response.contract,'unverified_compatibility');
+  const before=fixture.calls.length;
+  const duplicate=await fixture.window.moltbookDesk.execute('commentRemoveUpvote',{id:'reply',post_id:'parent',confirm_id:'reply'});
+  assert.equal(duplicate.ok,false);await fixture.elements.get('remove-vote-button').events.click();
+  assert.equal(fixture.calls.length,before);assert.deepEqual(readRaw(fixture),receipt);
+  assert.equal(fixture.calls.filter(c=>c.options.method==='DELETE').length,1);
+  assert.equal(fixture.calls.at(-1).url,'https://www.moltbook.com/api/v1/comments/reply/upvote');
+});

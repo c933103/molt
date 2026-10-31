@@ -118,3 +118,12 @@ test('lost comment-upvote browser response is classified as an uncertain write w
   }),/may have reached Moltbook/);
   assert.equal(writes,1);
 });
+
+test('comment removal CLI requires exact confirmation and parent context', () => {
+  const args=['comment-remove-upvote','--id','reply','--post-id','parent','--confirm-id','reply'];
+  const result=parseArgs(args); assert.equal(result.action,'commentRemoveUpvote');
+  assert.deepEqual(result.params,{id:'reply',post_id:'parent',confirm_id:'reply'});
+  assert.throws(()=>parseArgs(args.slice(0,-2)),/Required/);
+  assert.throws(()=>parseArgs([...args.slice(0,-1),'other']),/same comment ID/);
+  assert.throws(()=>parseArgs([...args,'--requester-id','other']),/Unknown/);
+});
