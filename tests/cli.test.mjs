@@ -95,7 +95,7 @@ test('comment commands keep comment identity separate from parent and do not acc
   assert.equal(read.action,'commentReadback'); assert.deepEqual(read.params,{id:'parent-456',cursor:'cursor?x=1'});
   assert.throws(()=>parseArgs(['comment-upvote']),/Required/);
   assert.throws(()=>parseArgs(['comment-readback','--id','parent','--requester-id','other']),/Unknown/);
-  assert.throws(()=>parseArgs(['comment-downvote','--id','reply']),/Unknown/);
+  assert.throws(()=>parseArgs(['comment-downvote','--id','reply']),/Required/);
   const page=pageURL(); let called;
   const context={location:{origin:page.origin,pathname:page.pathname,search:'',hash:''},window:{moltbookDesk:{version:1,async execute(action,params) { called={action,params}; return {ok:true,data:{type:'comment_vote'}}; }}}};
   await vm.runInNewContext(requestExpression(vote.action,vote.params,page),context);
@@ -126,4 +126,10 @@ test('comment removal CLI requires exact confirmation and parent context', () =>
   assert.throws(()=>parseArgs(args.slice(0,-2)),/Required/);
   assert.throws(()=>parseArgs([...args.slice(0,-1),'other']),/same comment ID/);
   assert.throws(()=>parseArgs([...args,'--requester-id','other']),/Unknown/);
+});
+
+test('comment downvote CLI requires an exact independently authorized target',()=>{
+  const args=['comment-downvote','--id','reply','--post-id','parent','--confirm-id','reply'];
+  const result=parseArgs(args);assert.equal(result.action,'commentDownvote');assert.deepEqual(result.params,{id:'reply',post_id:'parent',confirm_id:'reply'});
+  assert.throws(()=>parseArgs(args.slice(0,-2)),/Required/);assert.throws(()=>parseArgs([...args.slice(0,-1),'other']),/same comment ID/);assert.throws(()=>parseArgs([...args,'--requester-id','other']),/Unknown/);
 });

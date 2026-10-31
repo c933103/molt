@@ -638,12 +638,12 @@ test('removal rejects invalid target, confirmation and caller account overrides 
 test('removal never infers an own upvote from counts, ambiguous targets or unknown vote fields', async () => {
   for(const fields of [{user_vote:0},{user_vote:-1},{user_vote:'1'},{user_vote:null},{upvotes:100},{user_vote:1,post_id:'other'},{user_vote:1,post:{id:'other'}}]) {
     const calls=[];const {session}=setup(async(url,opts)=>{calls.push(opts.method);return response(url.endsWith('/agents/me')?{agent:{id:'agent'}}:{comments:[{id:'reply',...fields}]});});
-    await assert.rejects(session.request('commentRemoveUpvote',{id:'reply',post_id:'parent',confirm_id:'reply'}),/No removal sent/);
+    await assert.rejects(session.request('commentRemoveUpvote',{id:'reply',post_id:'parent',confirm_id:'reply'}),/No comment vote change sent/);
     assert.deepEqual(calls,['GET','GET']); assert.equal(session.commentRemovalAttempted('reply'),false);
   }
   for(const data of [{comments:[]},{comments:[{id:'reply',user_vote:1},{id:'reply',user_vote:1}]},{comments:[],has_more:true,next_cursor:''},{comments:[],has_more:true,next_cursor:'repeat'},{unexpected:[]}]) {
     const calls=[];const {session}=setup(async(url,opts)=>{calls.push(opts.method);return response(url.endsWith('/agents/me')?{agent:{id:'agent'}}:data);});
-    await assert.rejects(session.request('commentRemoveUpvote',{id:'reply',post_id:'parent',confirm_id:'reply'}),/No removal sent/);
+    await assert.rejects(session.request('commentRemoveUpvote',{id:'reply',post_id:'parent',confirm_id:'reply'}),/No comment vote change sent/);
     assert.equal(calls.includes('DELETE'),false);
   }
 });
@@ -708,7 +708,7 @@ test('removal fails closed on missing identity, wrong response parent and bounde
       pages++;
       return response(mode==='parent'?{post_id:'wrong',comments:[{id:'reply',user_vote:1}]}:mode==='nodes'?{comments:Array.from({length:5001},()=>({id:'other'}))}:{comments:[],has_more:true,next_cursor:'page-'+pages});
     });
-    await assert.rejects(session.request('commentRemoveUpvote',{id:'reply',post_id:'parent',confirm_id:'reply'}),/No removal sent/);
+    await assert.rejects(session.request('commentRemoveUpvote',{id:'reply',post_id:'parent',confirm_id:'reply'}),/No comment vote change sent/);
     assert.equal(methods.includes('DELETE'),false);if(mode==='pages')assert.equal(pages,20);if(mode==='identity')assert.equal(pages,0);
   }
 });
@@ -744,4 +744,52 @@ test('vote preflight guard failure reports no mutation and no invented failed re
     assert.equal(err.removalAttempt.phase,'preflight');assert.equal(err.removalAttempt.mutation_sent,false);
     assert.equal(err.removalAttempt.failed_request,undefined);assert.equal(err.removalAttempt.removal_verified,false);return true;
   });
+});
+
+test('authorized comment downvote is exact, guarded and never called neutral removal', async()=>{
+  for(const outcome of ['downvoted','unchanged','404','500','network']){
+    const calls=[];const {session}=setup(async(url,opts)=>{
+      calls.push([url,opts]);
+      if(opts.method==='GET')return response(url.endsWith('/agents/me')?{agent:{id:'agent'}}:{comments:[{id:'reply',post_id:'parent',user_vote:1}]});
+      if(outcome==='network')throw new Error('synthetic');
+      if(/^\d+$/.test(outcome))return response({error:'failure'},Number(outcome));
+      return response({success:true,action:outcome});
+    });
+    const p={id:'reply',post_id:'parent',confirm_id:'reply'};
+    if(['downvoted','unchanged'].includes(outcome)){
+      const result=await session.request('commentDownvote',p);assert.equal(result.vote_verified,false);assert.equal(result.contract,'unverified_compatibility');assert.equal(result.removal_verified,undefined);
+    }else await assert.rejects(session.request('commentDownvote',p),e=>e.unknownOutcome===['500','network'].includes(outcome));
+    assert.deepEqual(calls.map(c=>c[1].method),['GET','GET','POST']);
+    assert.equal(calls[2][0],'https://www.moltbook.com/api/v1/comments/reply/downvote');assert.equal(calls[2][1].body,undefined);
+    session.disconnect();session.connect(KEY);
+    await assert.rejects(session.request('commentDownvote',p),/already attempted/);await assert.rejects(session.request('commentUpvote',{id:'reply'}),/already attempted/);assert.equal(calls.length,3);
+  }
+});
+
+test('comment downvote rejects unsafe targets or own state before mutation',async()=>{
+  for(const state of [0,-1,'1',null,undefined]){
+    const methods=[];const {session}=setup(async(url,o)=>{methods.push(o.method);return response(url.endsWith('/agents/me')?{agent:{id:'agent'}}:{comments:[{id:'reply',user_vote:state}]});});
+    await assert.rejects(session.request('commentDownvote',{id:'reply',post_id:'parent',confirm_id:'reply'}),/No comment vote change sent/);assert.deepEqual(methods,['GET','GET']);
+  }
+  let calls=0;const {session}=setup(async()=>{calls++;return response();});
+  for(const extra of [{id:'../parent',confirm_id:'../parent'},{confirm_id:'different'},{post_id:undefined},{requester_id:'other'},{cursor:'x'}])await assert.rejects(session.request('commentDownvote',{id:'reply',post_id:'parent',confirm_id:'reply',...extra}));
+  assert.equal(calls,0);
+});
+
+test('downvote failure receipts distinguish preflight from the one POST and retain its guard',async()=>{
+  for(const stage of ['preflight','mutation']){
+    const calls=[];const {session}=setup(async(url,o)=>{calls.push([url,o.method]);if(url.endsWith('/agents/me'))return response({agent:{id:'agent'}});if(stage==='preflight'||o.method==='POST')return response({error:'Not Found'},404);return response({comments:[{id:'reply',user_vote:1}]});});
+    await assert.rejects(session.request('commentDownvote',{id:'reply',post_id:'parent',confirm_id:'reply'}),err=>{
+      assert.equal(err.voteAttempt.phase,stage==='mutation'?'downvote':'preflight');assert.equal(err.voteAttempt.mutation_sent,stage==='mutation');assert.equal(err.voteAttempt.failed_request.method,stage==='mutation'?'POST':'GET');assert.equal(err.voteAttempt.failed_request.http_status,404);assert.equal(err.voteAttempt.vote_verified,false);assert.equal(err.removalAttempt,undefined);return true;
+    });
+    assert.equal(session.commentDownvoteAttempted('reply'),stage==='mutation');assert.equal(calls.filter(c=>c[1]==='POST').length,stage==='mutation'?1:0);
+  }
+});
+
+test('downvote snapshots target and blocks mutation after disconnect during preflight',async()=>{
+  for(const disconnect of [false,true]){
+    let finish;const calls=[];const {session}=setup(async(url,o)=>{calls.push([url,o.method]);if(url.endsWith('/agents/me'))return new Promise(resolve=>{finish=resolve;});return response(o.method==='POST'?{success:true}:{comments:[{id:'reply',user_vote:1}]});});
+    const p={id:'reply',post_id:'parent',confirm_id:'reply'};const pending=session.request('commentDownvote',p);p.id='other';p.post_id='other-parent';p.confirm_id='other';if(disconnect)session.disconnect();finish(response({agent:{id:'agent'}}));
+    if(disconnect){await assert.rejects(pending);assert.equal(calls.length,1);assert.equal(session.commentDownvoteAttempted('reply'),false);}else{const r=await pending;assert.equal(r.comment_id,'reply');assert.equal(r.post_id,'parent');assert.equal(calls.at(-1)[0],'https://www.moltbook.com/api/v1/comments/reply/downvote');}
+  }
 });
