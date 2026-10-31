@@ -597,7 +597,7 @@ test('a null API response can be inspected and Disconnect clears it without anot
 test('explicit removal UI has no Enter submit and shares exact guard and receipt with CLI', async () => {
   const fixture=pageFixture({fetch:async(url,opts)=>jsonResponse(opts.method==='DELETE'?{success:true,action:'removed'}:url.includes('/comments?')?{comments:[{id:'reply',user_vote:1}]}:{agent:{id:'agent'}})});
   await fixture.connect();
-  assert.match(html,/Build: comment-remove-compat-v1/);
+  assert.match(html,/Build: comment-remove-diagnostics-v2/);
   assert.equal(fixture.elements.get('remove-vote-panel').events.keydown,undefined);
   for(const [id,value] of [['remove-vote-id','reply'],['remove-vote-confirm-id','reply'],['remove-vote-post-id','parent']]) fixture.elements.get(id).value=value;
   await fixture.elements.get('remove-vote-button').events.click();
@@ -609,4 +609,28 @@ test('explicit removal UI has no Enter submit and shares exact guard and receipt
   assert.equal(fixture.calls.length,before);assert.deepEqual(readRaw(fixture),receipt);
   assert.equal(fixture.calls.filter(c=>c.options.method==='DELETE').length,1);
   assert.equal(fixture.calls.at(-1).url,'https://www.moltbook.com/api/v1/comments/reply/upvote');
+});
+
+test('UI and CLI removal failure receipts retain the failed request phase without claiming removal', async () => {
+  for(const via of ['ui','cli'])for(const stage of ['comments','delete']){
+    const fixture=pageFixture({fetch:async(url,opts)=>{
+      const here=opts.method==='DELETE'?'delete':url.includes('/comments?')?'comments':'identity';
+      return here===stage?jsonResponse({error:'Not Found'},404):jsonResponse(here==='identity'?{agent:{id:'agent'}}:{comments:[{id:'reply',user_vote:1}]});
+    }});
+    await fixture.connect();
+    const p={id:'reply',post_id:'parent',confirm_id:'reply'};let result;
+    if(via==='cli')result=await fixture.window.moltbookDesk.execute('commentRemoveUpvote',p);
+    else{
+      for(const [id,value] of [['remove-vote-id','reply'],['remove-vote-confirm-id','reply'],['remove-vote-post-id','parent']])fixture.elements.get(id).value=value;
+      await fixture.elements.get('remove-vote-button').events.click();
+    }
+    const receipt=readRaw(fixture);
+    assert.equal(receipt.state,'request_failed');assert.equal(receipt.comment_id,'reply');
+    assert.equal(receipt.removal_attempt.phase,stage==='delete'?'removal':'preflight');
+    assert.equal(receipt.removal_attempt.mutation_sent,stage==='delete');
+    assert.equal(receipt.removal_attempt.failed_request.http_status,404);
+    assert.equal(receipt.removal_attempt.removal_verified,false);
+    if(result){assert.equal(result.ok,false);assert.deepEqual(JSON.parse(JSON.stringify(result.receipt)),receipt);}
+    assert.equal(fixture.calls.filter(c=>c.options.method==='DELETE').length,stage==='delete'?1:0);
+  }
 });

@@ -712,3 +712,36 @@ test('removal fails closed on missing identity, wrong response parent and bounde
     assert.equal(methods.includes('DELETE'),false);if(mode==='pages')assert.equal(pages,20);if(mode==='identity')assert.equal(pages,0);
   }
 });
+
+test('removal failure identifies preflight versus DELETE without copying headers or query values', async () => {
+  for (const stage of ['identity','comments','delete','network']) {
+    const calls=[];const {session}=setup(async(url,opts)=>{
+      calls.push(opts.method);
+      const here=url.endsWith('/agents/me')?'identity':opts.method==='DELETE'?'delete':'comments';
+      if(stage==='network'&&here==='delete')throw new Error('transport '+KEY);
+      if(here===stage)return response({error:'Not Found',message:'Cannot '+opts.method+' '+KEY,authorization:KEY},404);
+      return response(here==='identity'?{agent:{id:'agent-fixture'}}:{comments:[{id:'reply',user_vote:1}]});
+    });
+    await assert.rejects(session.request('commentRemoveUpvote',{id:'reply',post_id:'parent',confirm_id:'reply'}),err=>{
+      const r=JSON.parse(JSON.stringify(err.removalAttempt));
+      assert.equal(r.phase,['delete','network'].includes(stage)?'removal':'preflight');
+      assert.equal(r.mutation_sent,['delete','network'].includes(stage));assert.equal(r.removal_verified,false);
+      assert.equal(r.failed_request.sent,true);assert.equal(r.failed_request.method,['delete','network'].includes(stage)?'DELETE':'GET');
+      assert.equal(r.failed_request.path,stage==='identity'?'/api/v1/agents/me':stage==='comments'?'/api/v1/posts/parent/comments':'/api/v1/comments/reply/upvote');
+      assert.equal(r.failed_request.http_status,stage==='network'?undefined:404);
+      assert.equal(err.unknownOutcome,stage==='network');
+      assert.equal(Boolean(r.preflight),['delete','network'].includes(stage));
+      assert.doesNotMatch(JSON.stringify(r),/Authorization|Bearer|\?|moltbook_test_fixture|transport/);
+      return true;
+    });
+    assert.equal(calls.filter(x=>x==='DELETE').length,['delete','network'].includes(stage)?1:0);
+  }
+});
+
+test('vote preflight guard failure reports no mutation and no invented failed request', async () => {
+  const {session}=setup(async url=>response(url.endsWith('/agents/me')?{agent:{id:'agent'}}:{comments:[{id:'reply',user_vote:0}]}));
+  await assert.rejects(session.request('commentRemoveUpvote',{id:'reply',post_id:'parent',confirm_id:'reply'}),err=>{
+    assert.equal(err.removalAttempt.phase,'preflight');assert.equal(err.removalAttempt.mutation_sent,false);
+    assert.equal(err.removalAttempt.failed_request,undefined);assert.equal(err.removalAttempt.removal_verified,false);return true;
+  });
+});

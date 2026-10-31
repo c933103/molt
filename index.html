@@ -4,13 +4,13 @@
   <meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="referrer" content="no-referrer">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-cfbLQ4fqwy4E69s2FUm7gpKsN+W5ysGfJpdFa5fYFmg='; style-src 'none'; connect-src https://www.moltbook.com; base-uri 'none'; form-action 'none'; object-src 'none'">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-HywjqRdECOYzStvvuVz+RNSAG1AqpPQkEUhi1nacG8I='; style-src 'none'; connect-src https://www.moltbook.com; base-uri 'none'; form-action 'none'; object-src 'none'">
   <title>Moltbook browser desk</title>
 </head>
 <body>
 <h1>Moltbook browser desk</h1>
 <p>Read, search and publish through Moltbook's API.</p>
-<p id="client-build">Build: comment-remove-compat-v1</p>
+<p id="client-build">Build: comment-remove-diagnostics-v2</p>
 <noscript><p>The page's markup uses HTML 4.0. API operations and encrypted saved credentials require JavaScript and a modern HTTPS browser. These buttons do not submit credentials without JavaScript.</p></noscript>
 <p><strong id="connection">Not connected</strong></p>
 <div id="connect-form">
@@ -516,9 +516,10 @@ class MoltbookSession {
     const epoch = this.#epoch;
     const timeout = setTimeout(() => controller.abort(), 20000);
     if (action === 'commentUpvote') this.#commentVotes.add(params.id);
+    let removalPreflight = null;
     try {
       if (action === 'commentRemoveUpvote') {
-        const preflight = await this.#removalPreflight(params, controller, epoch);
+        const preflight = removalPreflight = await this.#removalPreflight(params, controller, epoch);
         // Retain this guard after every DELETE outcome, including an explicit rejection.
         this.#commentRemovals.add(params.id);
         const response = await this.#send(action, params, op, controller, epoch);
@@ -533,6 +534,10 @@ class MoltbookSession {
       }
       return await this.#send(action, params, op, controller, epoch);
     } catch (err) {
+      if (action === 'commentRemoveUpvote' && err instanceof ClientError) {
+        const request = err.request;
+        err.removalAttempt = this.scrub({phase:removalPreflight ? 'removal' : 'preflight', mutation_sent:request?.action === action && request.sent === true, ...(removalPreflight ? {preflight:removalPreflight} : {}), ...(request ? {failed_request:request} : {}), removal_verified:false});
+      }
       if (action === 'commentUpvote' && err instanceof ClientError && !err.unknownOutcome) this.#commentVotes.delete(params.id);
       throw err;
     } finally {
@@ -571,12 +576,14 @@ class MoltbookSession {
     throw new ClientError('Exact comment was not found within the bounded account readback. No removal sent.');
   }
   async #send(action, params, op, controller, epoch) {
-    let receivedResponse = false;
+    let receivedResponse = false, requestSent = false, httpStatus = null;
     try {
       if (epoch !== this.#epoch || controller.signal.aborted) throw new ClientError('Disconnected or timed out before the request was sent.');
       const headers = {'Authorization':'Bearer ' + this.#key, 'Accept':'application/json'};
       if (op.body) headers['Content-Type'] = 'application/json';
+      requestSent = true;
       const res = await fetch(op.url, {method:op.method, headers, ...(op.body ? {body:JSON.stringify(op.body)} : {}), mode:'cors', credentials:'omit', redirect:'error', cache:'no-store', referrerPolicy:'no-referrer', signal:controller.signal});
+      httpStatus = res.status;
       if (epoch !== this.#epoch) throw new ClientError('Disconnected. The pending response was discarded.', MUTATIONS.has(action));
       receivedResponse = true;
       if (res.url && new URL(res.url).origin !== API_ORIGIN) throw new ClientError('Unexpected API response origin.', MUTATIONS.has(action));
@@ -608,9 +615,11 @@ class MoltbookSession {
       }
       return data;
     } catch (err) {
-      if (err instanceof ClientError) throw err;
       const unknown = MUTATIONS.has(action);
-      throw new ClientError((receivedResponse ? 'Could not finish reading the response.' : 'Request failed or timed out. Check the connection and browser CORS access.') + (unknown ? ' The action may have reached Moltbook. Check the account before retrying.' : ''), unknown);
+      const failure = err instanceof ClientError ? err : new ClientError((receivedResponse ? 'Could not finish reading the response.' : 'Request failed or timed out. Check the connection and browser CORS access.') + (unknown ? ' The action may have reached Moltbook. Check the account before retrying.' : ''), unknown);
+      // Client-derived request identity only: never headers, query values or server echoes.
+      failure.request = this.scrub({action, method:op.method, path:new URL(op.url).pathname, sent:requestSent, ...(httpStatus === null ? {} : {http_status:httpStatus})});
+      throw failure;
     }
   }
 }
@@ -778,7 +787,7 @@ async function run(action, params = {}, show = true) {
     return data;
   } catch (err) {
     const message = (err instanceof ClientError ? err.message : 'Could not complete the request.') + (err.unknownOutcome && !err.message.includes('before retrying') ? ' Check the account before repeating this action.' : '');
-    record(err.unknownOutcome ? 'unknown_outcome' : 'request_failed', {error:message});
+    record(err.unknownOutcome ? 'unknown_outcome' : 'request_failed', {error:message, ...(err.removalAttempt ? {removal_attempt:err.removalAttempt} : {})});
     notice(message, 'error');
     return null;
   } finally { sync(); }
@@ -919,7 +928,7 @@ window.addEventListener('pagehide', () => { connectionGeneration++; connectionBu
 window.addEventListener('pageshow', () => { connectionReady = restoreConnection(); });
 // The CLI invokes this interface in the page. No credential-reading operation is exposed.
 Object.defineProperty(window, 'moltbookDesk', {value:Object.freeze({
-  version:1, build:'comment-remove-compat-v1',
+  version:1, build:'comment-remove-diagnostics-v2',
   async execute(action, params = {}) {
     await connectionReady;
     if (connectionBusy) return {ok:false, error:'The browser connection is being updated. Wait for it to finish.'};
@@ -940,7 +949,7 @@ Object.defineProperty(window, 'moltbookDesk', {value:Object.freeze({
     } catch (err) {
       const message = err instanceof ClientError ? err.message : 'Could not complete the browser request.';
       notice(message, 'error'); sync();
-      const receipt = target ? recordVote(target, err.unknownOutcome ? 'unknown_outcome' : 'request_failed', {error:message}) : null;
+      const receipt = target ? recordVote(target, err.unknownOutcome ? 'unknown_outcome' : 'request_failed', {error:message, ...(err.removalAttempt ? {removal_attempt:err.removalAttempt} : {})}) : null;
       return {ok:false, error:message, unknownOutcome:Boolean(err.unknownOutcome), ...(receipt ? {receipt} : {})};
     }
   }
