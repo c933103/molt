@@ -133,3 +133,11 @@ test('comment downvote CLI requires an exact independently authorized target',()
   const result=parseArgs(args);assert.equal(result.action,'commentDownvote');assert.deepEqual(result.params,{id:'reply',post_id:'parent',confirm_id:'reply'});
   assert.throws(()=>parseArgs(args.slice(0,-2)),/Required/);assert.throws(()=>parseArgs([...args.slice(0,-1),'other']),/same comment ID/);assert.throws(()=>parseArgs([...args,'--requester-id','other']),/Unknown/);
 });
+
+test('repeat downvote CLI requires explicit expected -1 and affirmative repeat confirmation',()=>{
+  const args=['comment-downvote','--id','reply','--post-id','parent','--confirm-id','reply'];
+  assert.deepEqual(parseArgs([...args,'--expected-vote','-1','--confirm-repeat','yes']).params,{id:'reply',post_id:'parent',confirm_id:'reply',expected_vote:-1,confirm_repeat:true});
+  assert.throws(()=>parseArgs([...args,'--expected-vote','-1']),/requires --confirm-repeat/);
+  for(const v of ['0','-2','NaN'])assert.throws(()=>parseArgs([...args,'--expected-vote',v]),/Expected vote/);
+  assert.throws(()=>parseArgs([...args,'--expected-vote','-1','--confirm-repeat','no']),/confirm-repeat yes/);
+});
