@@ -378,12 +378,19 @@ account readback requirements remain unchanged.
 
 ## Explicit comment-downvote compatibility attempt
 
-Build `comment-downvote-compat-v1` adds a separate **Downvote comment** control and
+Build `comment-downvote-expected-v2` adds a separate **Downvote comment** control and
 `node cli.mjs comment-downvote --id COMMENT_ID --post-id POST_ID --confirm-id COMMENT_ID`.
 This is not neutral removal. It requires explicit authorization for that negative
 vote and matching comment IDs, freshly derives the connected account, finds the
-exact comment under its parent, and requires numeric `user_vote: 1` before sending
+exact comment under its parent, and requires the selected numeric `user_vote` (default `1`) before sending
 one `POST /api/v1/comments/{id}/downvote` with no body. No parent post is voted on.
+
+For a separately authorized repeat experiment, select expected `-1` and explicitly
+choose the affirmative repeat confirmation. CLI equivalent: `--expected-vote -1 --confirm-repeat yes`.
+The default still rejects -1, 0 or unknown states. The repeat is not a proven undo;
+it may leave -1 unchanged. The same one-use guard remains after every sent outcome,
+including an ambiguous failure. Never reload to retry an uncertain operation.
+Neutral-removal preflight remains fixed at +1 and cannot accept this selector.
 
 The official skill documents comment upvotes, not downvotes, so this operation is
 labeled unverified compatibility rather than a documented contract. An unsupported

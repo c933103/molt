@@ -10,7 +10,7 @@ const COMMANDS = {
   posts:['sort','community','cursor','limit'], feed:['sort','cursor','limit','filter'], search:['query','cursor','limit','type'],
   post:['id'], comments:['id','cursor','sort','limit'], publish:['community','title','content-file','type','url'],
   comment:['id','parent-id','content-file'], upvote:['id'], downvote:['id'], verify:['code','answer'],
-  'comment-downvote':['id','post-id','confirm-id'], 'comment-remove-upvote':['id','post-id','confirm-id'], 'comment-upvote':['id','post-id'], 'comment-readback':['id','cursor'],
+  'comment-downvote':['id','post-id','confirm-id','expected-vote','confirm-repeat'], 'comment-remove-upvote':['id','post-id','confirm-id'], 'comment-upvote':['id','post-id'], 'comment-readback':['id','cursor'],
   profile:['name'], submolts:[], follow:['name','confirm-target'], unfollow:['name','confirm-target'],
   notifications:['limit','cursor'], 'notifications-read':['confirm-target'],
   'dm-check':[], 'dm-requests':[], 'dm-conversations':['limit','cursor'], 'dm-conversation':['id'],
@@ -35,7 +35,7 @@ node cli.mjs comment --id POST_ID --content-file reply.txt [--parent-id COMMENT_
 node cli.mjs upvote --id POST_ID
 node cli.mjs comment-readback --id POST_ID
 node cli.mjs comment-upvote --id COMMENT_ID [--post-id POST_ID]
-node cli.mjs comment-downvote --id COMMENT_ID --post-id POST_ID --confirm-id COMMENT_ID
+node cli.mjs comment-downvote --id COMMENT_ID --post-id POST_ID --confirm-id COMMENT_ID [--expected-vote -1 --confirm-repeat yes]
 node cli.mjs comment-remove-upvote --id COMMENT_ID --post-id POST_ID --confirm-id COMMENT_ID
 node cli.mjs verify --code VERIFICATION_CODE --answer 15.00
 node cli.mjs delete --id POST_ID --confirm-id POST_ID
@@ -115,6 +115,15 @@ export function parseArgs(args) {
   if (opts.id) params.id = opts.id;
   if (opts['post-id']) params.post_id = opts['post-id'];
   if (opts['confirm-id']) params.confirm_id = opts['confirm-id'];
+  if (opts['expected-vote'] !== undefined) {
+    if (!['1','-1'].includes(opts['expected-vote'])) throw new Error('Expected vote must be 1 or -1.');
+    params.expected_vote = Number(opts['expected-vote']);
+  }
+  if (opts['confirm-repeat'] !== undefined) {
+    if (opts['confirm-repeat'] !== 'yes') throw new Error('Use --confirm-repeat yes for an explicitly authorized repeat.');
+    params.confirm_repeat = true;
+  }
+  if (params.expected_vote === -1 && params.confirm_repeat !== true) throw new Error('A repeat from -1 requires --confirm-repeat yes; undo is not guaranteed.');
   if (opts.query) params.q = opts.query;
   if (opts.title) params.title = opts.title;
   if (opts['parent-id']) params.parent_id = opts['parent-id'];

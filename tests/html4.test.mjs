@@ -597,7 +597,7 @@ test('a null API response can be inspected and Disconnect clears it without anot
 test('explicit removal UI has no Enter submit and shares exact guard and receipt with CLI', async () => {
   const fixture=pageFixture({fetch:async(url,opts)=>jsonResponse(opts.method==='DELETE'?{success:true,action:'removed'}:url.includes('/comments?')?{comments:[{id:'reply',user_vote:1}]}:{agent:{id:'agent'}})});
   await fixture.connect();
-  assert.match(html,/Build: comment-downvote-compat-v1/);
+  assert.match(html,/Build: comment-downvote-expected-v2/);
   assert.equal(fixture.elements.get('remove-vote-panel').events.keydown,undefined);
   for(const [id,value] of [['remove-vote-id','reply'],['remove-vote-confirm-id','reply'],['remove-vote-post-id','parent']]) fixture.elements.get(id).value=value;
   await fixture.elements.get('remove-vote-button').events.click();
@@ -645,4 +645,19 @@ test('explicit comment downvote UI and CLI share one guarded exact-target receip
   const repeat=await fixture.window.moltbookDesk.execute('commentDownvote',{id:'reply',post_id:'parent',confirm_id:'reply'});assert.equal(repeat.ok,false);
   await fixture.elements.get('downvote-comment-button').events.click();assert.equal(fixture.calls.length,calls);assert.deepEqual(readRaw(fixture),receipt);
   assert.equal(fixture.calls.at(-1).url,'https://www.moltbook.com/api/v1/comments/reply/downvote');assert.equal(fixture.calls.at(-1).options.method,'POST');
+});
+
+test('repeat UI requires expected -1 and confirmation, sends once and shares CLI guard',async()=>{
+  const fixture=pageFixture({fetch:async(url,opts)=>jsonResponse(opts.method==='POST'?{success:true,action:'unchanged'}:url.includes('/comments?')?{comments:[{id:'reply',user_vote:-1}]}:{agent:{id:'agent'}})});
+  await fixture.connect();
+  for(const [id,value] of [['downvote-comment-id','reply'],['downvote-comment-confirm-id','reply'],['downvote-comment-post-id','parent'],['downvote-comment-expected','-1']])fixture.elements.get(id).value=value;
+  const before=fixture.calls.length;
+  await fixture.elements.get('downvote-comment-button').events.click();assert.equal(fixture.calls.length,before);assert.match(readRaw(fixture).error,/Explicitly confirm/);
+  fixture.elements.get('downvote-comment-repeat').value='yes';
+  await fixture.elements.get('downvote-comment-button').events.click();const receipt=readRaw(fixture);
+  assert.equal(receipt.response.repeat_experiment,true);assert.equal(receipt.response.preflight.user_vote,-1);assert.equal(receipt.response.vote_verified,false);
+  assert.equal(fixture.calls.length,before+3);
+  await fixture.elements.get('downvote-comment-button').events.click();
+  assert.equal((await fixture.window.moltbookDesk.execute('commentDownvote',{id:'reply',post_id:'parent',confirm_id:'reply',expected_vote:-1,confirm_repeat:true})).ok,false);
+  assert.equal(fixture.calls.length,before+3);
 });

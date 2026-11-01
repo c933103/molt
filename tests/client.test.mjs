@@ -793,3 +793,36 @@ test('downvote snapshots target and blocks mutation after disconnect during pref
     if(disconnect){await assert.rejects(pending);assert.equal(calls.length,1);assert.equal(session.commentDownvoteAttempted('reply'),false);}else{const r=await pending;assert.equal(r.comment_id,'reply');assert.equal(r.post_id,'parent');assert.equal(calls.at(-1)[0],'https://www.moltbook.com/api/v1/comments/reply/downvote');}
   }
 });
+
+test('explicit expected -1 repeat sends one exact POST and never assumes undo', async()=>{
+  for(const outcome of ['downvoted','removed','404','500','network']){
+    const calls=[];const {session}=setup(async(url,opts)=>{
+      calls.push([url,opts]);
+      if(opts.method==='GET')return response(url.endsWith('/agents/me')?{agent:{id:'agent'}}:{comments:[{id:'reply',post_id:'parent',user_vote:-1}]});
+      if(outcome==='network')throw new Error('synthetic');
+      return /^\d+$/.test(outcome)?response({error:'failure'},Number(outcome)):response({success:true,action:outcome});
+    });
+    const p={id:'reply',post_id:'parent',confirm_id:'reply',expected_vote:-1,confirm_repeat:true};
+    if(['downvoted','removed'].includes(outcome)){
+      const r=await session.request('commentDownvote',p);assert.equal(r.preflight.user_vote,-1);assert.equal(r.repeat_experiment,true);assert.equal(r.vote_verified,false);assert.equal(r.removal_verified,undefined);
+    }else await assert.rejects(session.request('commentDownvote',p),e=>e.unknownOutcome===['500','network'].includes(outcome));
+    assert.deepEqual(calls.map(x=>x[1].method),['GET','GET','POST']);assert.equal(calls[2][0],'https://www.moltbook.com/api/v1/comments/reply/downvote');assert.equal(calls[2][1].body,undefined);
+    session.disconnect();session.connect(KEY);
+    for(const expected_vote of [-1,1])await assert.rejects(session.request('commentDownvote',{...p,expected_vote}),/already attempted/);
+    assert.equal(calls.length,3);
+  }
+});
+
+test('expected vote and repeat confirmation fail closed; neutral removal stays +1-only', async()=>{
+  let calls=0;const {session}=setup(async()=>{calls++;return response();});
+  const p={id:'reply',post_id:'parent',confirm_id:'reply'};
+  for(const expected_vote of [0,'-1','1',null,NaN,2])await assert.rejects(session.request('commentDownvote',{...p,expected_vote,confirm_repeat:true}),/Expected/);
+  for(const confirm_repeat of [undefined,false,'true','yes',1])await assert.rejects(session.request('commentDownvote',{...p,expected_vote:-1,confirm_repeat}),/Explicitly confirm/);
+  assert.equal(calls,0);
+  for(const state of [1,0,'-1',null,undefined]){
+    const methods=[];const f=setup(async(url,o)=>{methods.push(o.method);return response(url.endsWith('/agents/me')?{agent:{id:'agent'}}:{comments:[{id:'reply',user_vote:state}]});});
+    await assert.rejects(f.session.request('commentDownvote',{...p,expected_vote:-1,confirm_repeat:true}),/not exactly -1/);assert.deepEqual(methods,['GET','GET']);
+  }
+  const f=setup(async url=>response(url.endsWith('/agents/me')?{agent:{id:'agent'}}:{comments:[{id:'reply',user_vote:-1}]}));
+  await assert.rejects(f.session.request('commentRemoveUpvote',{...p,expected_vote:-1,confirm_repeat:true}),/not exactly 1/);
+});
