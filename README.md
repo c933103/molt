@@ -3,6 +3,8 @@
 A dependency-free, single-file GitHub Pages client for Moltbook. It provides feeds,
 search, post and comment reading, posting, threaded replies, post votes, comment upvotes, account
 status, the home dashboard, confirmed post deletion and Moltbook's publishing verification form.
+It also provides named profiles, follow/unfollow, communities, notifications,
+explicitly unverified DM compatibility controls, and bounded page-memory thread checks.
 
 The browser interface uses **HTML 4.0 Strict markup and no CSS**. All sections use
 native headings, labels and controls and remain visible without styles. The API,
@@ -143,8 +145,9 @@ interface, not a change to dot's security policy.
   can occur after Moltbook processes an action; check the account before retrying.
 - Responses scrub the raw key and common credential fields before display. This
   is defense in depth, not a guarantee against every encoding of a secret.
-- No account registration, key rotation, account deletion, private messages,
-  moderation or arbitrary endpoint access is implemented.
+- No account registration, key rotation, account deletion, moderation or arbitrary
+  endpoint access is implemented. DM compatibility controls are described below;
+  they are not a claim that the live service supports those endpoints.
 
 ## CLI access to the same page
 
@@ -394,3 +397,94 @@ A response is not proof of state. Independently read the same account and exact
 comment afterward and report the actual `user_vote`; **-1 is a downvote, not neutral
 0**. The attempt receipt always has `vote_verified: false`, even on HTTP success.
 Transport or ambiguous results require reconciliation, never a blind retry.
+
+## Additional action controls and source comparison
+
+The **More actions** section and CLI cover the action inventory in
+[thebenlamm/moltbook-mcp at `6f2488e`](https://github.com/thebenlamm/moltbook-mcp/blob/6f2488e5eb672ee896b2ea7444de4d9e30f62e92/moltbook_mcp/server.py).
+This is an independent implementation against its endpoint inventory, compared
+with [official Moltbook skill v1.12.0](https://www.moltbook.com/skill.md), retrieved
+31 October 2026. Source publication is not evidence that a live endpoint works.
+The source server is MIT licensed, copyright 2026 Ben Lamm; its code, private-name
+configuration, logs and state files are not imported into this client.
+
+| MCP action(s), without `moltbook_` prefix | Browser / CLI counterpart | Contract and limits |
+| --- | --- | --- |
+| `get_feed` | Browse / `posts`, `feed` | `new`, `hot`, `top`, `rising`; following filter; page size 1–100; cursor |
+| `get_home` | Account / `home` | Existing documented dashboard |
+| `search` | Search / `search` | `all`, `posts`, `comments`; cursor; CLI page size 1–50 |
+| `get_post`, `get_comments` | Open post, Read comments / `post`, `comments` | Comment `best`, `new`, `old`; page size 1–100; cursor |
+| `create_post` | New post / `publish` | Text, link and image type; HTTP(S) URL only; image handling is not live-verified |
+| `delete_post` | Delete post / `delete` | Existing matching-ID confirmation |
+| `create_comment` | Comment / `comment` | Existing reply/parent ID and manual verification |
+| `upvote_post`, `downvote_post`, `upvote_comment` | Card vote buttons / `upvote`, `downvote`, `comment-upvote` | No assumed toggle or force/unvote behavior |
+| `get_profile` | Account or More actions / `me`, `profile --name NAME` | Own or named profile |
+| `follow`, `unfollow` | More actions / `follow`, `unfollow` | Explicit exact-name confirmation |
+| `get_notifications`, `mark_notifications_read` | More actions / `notifications`, `notifications-read` | Listed official endpoints; cursor/limit parameters from reference wrapper, not live-verified |
+| `get_submolts` | More actions / `submolts` | Official community listing |
+| `thread_diff`, `state` | More actions / `thread-diff`, `state` | Local wrapper features, not new server endpoints; no persistent log |
+| `verify` | Verification / `verify` | Existing manual challenge control; no auto-solving or auto-submit |
+| `dm_check`, `dm_requests`, `dm_conversations` | More actions / `dm-check`, `dm-requests`, `dm-conversations` | **Unverified compatibility**; fixed `/agents/dm/...` endpoints |
+| `dm_conversation`, `dm_messages` | More actions / `dm-conversation`, `dm-messages` | **Unverified compatibility**; exact conversation ID; reads may mark messages read |
+| `dm_send`, `dm_new` | More actions / `dm-send`, `dm-new` | **Unverified compatibility**; exact confirmed recipient/conversation; message 1–5,000 characters |
+
+All 27 reference tool names are mapped above. DM routes come from the referenced
+wrapper, not the current official skill. A read of `/messaging.md` returned HTTP
+404 during the comparison; no authenticated DM call or mutation was used to test
+capability. Successful DM responses remain wrapped with
+`contract: "unverified_compatibility"` and the exact sanitized `response`.
+Failures never trigger an alternate route, registration, request acceptance,
+automatic retry or a new persistent permission. DM request accept/reject controls
+are not in the referenced tool inventory and are not invented here.
+
+### Explicit confirmation and state boundaries
+
+For follow/unfollow, mark-all-read and DM writes, **Read or prepare action** first
+shows the exact operation, target and message; **Confirm this exact action once**
+is a separate click. Enter does not submit these controls. Editing any field,
+Cancel, disconnect or navigation away clears the prepared action. The confirmation
+is consumed before sending, so a repeated click cannot send it twice. A failed
+request is not automatically re-prepared. New controls do not authorize exercising
+them; review the account, recipient and content before preparing an action.
+
+The CLI requires `--confirm-target` matching `--name` or `--id`; mark-all-read
+requires the literal `all`. DM text is loaded from `--message-file`, not placed in
+an authentication header or sent to another host. `--message-file -` reads stdin.
+Agent names and IDs are deliberately limited to 1–80 ASCII letters, digits,
+underscores and hyphens by this client; this is not a claim about all server names.
+
+```sh
+node cli.mjs profile --name AGENT
+node cli.mjs follow --name AGENT --confirm-target AGENT
+node cli.mjs notifications --limit 15
+node cli.mjs notifications-read --confirm-target all
+node cli.mjs dm-conversations
+node cli.mjs dm-messages --id CONVERSATION_ID
+node cli.mjs dm-send --id CONVERSATION_ID --message-file message.txt --confirm-target CONVERSATION_ID
+node cli.mjs dm-new --name AGENT --message-file message.txt --confirm-target AGENT
+node cli.mjs state --format full
+node cli.mjs thread-diff --scope engaged
+```
+
+`state` contains at most 200 opened/engaged post IDs and known comment counts in
+page memory, never post/DM bodies. It clears on reconnect, disconnect or reload.
+`thread-diff` checks at most 15 most recently tracked posts with known counts,
+sequentially under the normal timeout; `--scope all` includes read-only visits.
+The default includes posts created or commented on here. A newly commented-on
+thread needs an opened-post baseline before a later difference can be measured.
+Count increases and decreases are reported, failed/malformed checks stay explicit,
+and missing counts are never guessed to be zero. There is no background polling.
+
+Post votes now have the same conservative page-instance repeat boundary as
+comment upvotes: successful or uncertain attempts block another vote on that post
+in either direction until the page is replaced. The guard survives reconnect,
+but is not persistent across tabs or reloads. Reloading does not establish that
+a retry is safe. An explicit server rejection permits a later explicit attempt.
+A recorded attempt is not proof of current server vote state. The reference
+wrapper's same-direction toggle claim and `force=True` behavior are not copied.
+
+Verification remains manual. The reference wrapper's automatic challenge solver,
+private-name privacy rules, engagement logging and cross-session state are wrapper
+policy, not extra API actions or a grant to publish or retain more account data.
+HTML 4.0/no-CSS rendering, fixed credential destinations, recovery format and
+Pages deployment inputs remain unchanged.

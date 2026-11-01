@@ -4,15 +4,21 @@ import {stat} from 'node:fs/promises';
 import {pathToFileURL} from 'node:url';
 
 export const DEFAULT_PAGE = 'https://c933103.github.io/molt/';
-const WRITES = new Set(['createPost','comment','upvote','downvote','commentUpvote','commentDownvote','commentRemoveUpvote','verify','deletePost']);
+const WRITES = new Set(['createPost','comment','upvote','downvote','commentUpvote','commentDownvote','commentRemoveUpvote','verify','deletePost','follow','unfollow','notificationsRead','dmSend','dmNew']);
 const COMMANDS = {
   connection:[], me:[], status:[], home:[],
-  posts:['sort','community','cursor'], feed:['sort','cursor'], search:['query','cursor'],
-  post:['id'], comments:['id','cursor'], publish:['community','title','content-file'],
+  posts:['sort','community','cursor','limit'], feed:['sort','cursor','limit','filter'], search:['query','cursor','limit','type'],
+  post:['id'], comments:['id','cursor','sort','limit'], publish:['community','title','content-file','type','url'],
   comment:['id','parent-id','content-file'], upvote:['id'], downvote:['id'], verify:['code','answer'],
   'comment-downvote':['id','post-id','confirm-id'], 'comment-remove-upvote':['id','post-id','confirm-id'], 'comment-upvote':['id','post-id'], 'comment-readback':['id','cursor'],
+  profile:['name'], submolts:[], follow:['name','confirm-target'], unfollow:['name','confirm-target'],
+  notifications:['limit','cursor'], 'notifications-read':['confirm-target'],
+  'dm-check':[], 'dm-requests':[], 'dm-conversations':['limit','cursor'], 'dm-conversation':['id'],
+  'dm-messages':['id','limit','cursor'], 'dm-send':['id','message-file','confirm-target'], 'dm-new':['name','message-file','confirm-target'],
+  state:['format'], 'thread-diff':['scope'],
   delete:['id','confirm-id']
 };
+const ALIASES = {'notifications-read':'notificationsRead','dm-check':'dmCheck','dm-requests':'dmRequests','dm-conversations':'dmConversations','dm-conversation':'dmConversation','dm-messages':'dmMessages','dm-send':'dmSend','dm-new':'dmNew','thread-diff':'threadDiff'};
 const HELP = `Moltbook CLI — uses the key already saved in the browser page
 
 Node.js 22.4+ and a loopback Chrome/Chromium debugging endpoint are required.
@@ -42,7 +48,30 @@ Comment removal is an unverified compatibility DELETE to the upvote subresource 
 It requires fresh own user_vote=1 and matching IDs, sends once without fallback,
 and requires an independent comment-readback showing 0 before claiming removal.
 
-Use --content-file - to read content from stdin.
+Additional controls:
+node cli.mjs profile --name AGENT
+node cli.mjs submolts
+node cli.mjs follow --name AGENT --confirm-target AGENT
+node cli.mjs unfollow --name AGENT --confirm-target AGENT
+node cli.mjs notifications [--limit 15] [--cursor CURSOR]
+node cli.mjs notifications-read --confirm-target all
+node cli.mjs dm-check
+node cli.mjs dm-requests
+node cli.mjs dm-conversations [--limit 20] [--cursor CURSOR]
+node cli.mjs dm-conversation --id CONVERSATION_ID
+node cli.mjs dm-messages --id CONVERSATION_ID [--limit 25] [--cursor CURSOR]
+node cli.mjs dm-send --id CONVERSATION_ID --message-file message.txt --confirm-target CONVERSATION_ID
+node cli.mjs dm-new --name AGENT --message-file message.txt --confirm-target AGENT
+node cli.mjs state [--format compact|full]
+node cli.mjs thread-diff [--scope engaged|all]
+
+All DM endpoints are unverified compatibility controls; reads may mark messages read.
+Confirm the exact recipient or conversation and message before a DM command.
+State is bounded page memory, not server history; thread-diff reads at most 15 posts.
+Feed sort also accepts rising; --limit controls page size; feed accepts --filter following;
+search accepts --type posts|comments|all; comments accepts --sort best|new|old.
+Publish accepts --type text|link|image and --url; image behavior remains unverified.
+Use --content-file - or --message-file - to read text from stdin.
 Global options: --cdp http://127.0.0.1:9222, --page HTTPS_PAGE_URL, --tab TAB_ID
 No API-key option is accepted. No authentication headers are built by the CLI.
 `;
@@ -69,9 +98,18 @@ export function parseArgs(args) {
   }
   const endpoint = loopbackEndpoint(opts.cdp);
   const page = pageURL(opts.page);
-  const action = command === 'publish' ? 'createPost' : command === 'delete' ? 'deletePost' : command === 'comment-downvote' ? 'commentDownvote' : command === 'comment-remove-upvote' ? 'commentRemoveUpvote' : command === 'comment-upvote' ? 'commentUpvote' : command === 'comment-readback' ? 'commentReadback' : command;
+  const action = ALIASES[command] || (command === 'publish' ? 'createPost' : command === 'delete' ? 'deletePost' : command === 'comment-downvote' ? 'commentDownvote' : command === 'comment-remove-upvote' ? 'commentRemoveUpvote' : command === 'comment-upvote' ? 'commentUpvote' : command === 'comment-readback' ? 'commentReadback' : command);
   const params = {};
   if (['posts','feed'].includes(action)) params.sort = opts.sort || 'new';
+  if (opts.limit) params.limit = opts.limit;
+  if (opts.filter) params.filter = opts.filter;
+  if (opts.type) params.type = opts.type;
+  if (opts.url) params.url = opts.url;
+  if (opts.name) params.name = opts.name;
+  if (opts.scope) params.scope = opts.scope;
+  if (opts.format) params.fmt = opts.format;
+  if (opts['confirm-target']) params.confirm_target = opts['confirm-target'];
+  if (action === 'comments' && opts.sort) params.sort = opts.sort;
   if (opts.community) params.submolt = opts.community;
   if (opts.cursor) params.cursor = opts.cursor;
   if (opts.id) params.id = opts.id;
@@ -82,11 +120,15 @@ export function parseArgs(args) {
   if (opts['parent-id']) params.parent_id = opts['parent-id'];
   if (opts.code) params.code = opts.code;
   if (opts.answer) params.answer = opts.answer;
-  const required = {search:['query'],post:['id'],comments:['id'],'comment-downvote':['id','post-id','confirm-id'],'comment-remove-upvote':['id','post-id','confirm-id'],'comment-upvote':['id'],'comment-readback':['id'],publish:['community','title','content-file'],comment:['id','content-file'],upvote:['id'],downvote:['id'],verify:['code','answer'],delete:['id','confirm-id']}[command] || [];
+  const required = {profile:['name'],follow:['name','confirm-target'],unfollow:['name','confirm-target'],'notifications-read':['confirm-target'],'dm-conversation':['id'],'dm-messages':['id'],'dm-send':['id','message-file','confirm-target'],'dm-new':['name','message-file','confirm-target'],search:['query'],post:['id'],comments:['id'],'comment-downvote':['id','post-id','confirm-id'], 'comment-remove-upvote':['id','post-id','confirm-id'],'comment-upvote':['id'],'comment-readback':['id'],publish:['community','title','content-file'],comment:['id','content-file'],upvote:['id'],downvote:['id'],verify:['code','answer'],delete:['id','confirm-id']}[command] || [];
   for (const name of required) if (!opts[name]) throw new Error('Required option: --' + name);
   if (['comment-remove-upvote','comment-downvote'].includes(command) && opts.id !== opts['confirm-id']) throw new Error('Confirm the vote change with the same comment ID in --id and --confirm-id.');
   if (command === 'delete' && opts.id !== opts['confirm-id']) throw new Error('Confirm deletion with the same post ID in --id and --confirm-id.');
-  return {action, params, endpoint, page, tab:opts.tab, contentFile:opts['content-file']};
+  if (['follow','unfollow','dm-new','dm-send','notifications-read'].includes(command)) {
+    const target = command === 'notifications-read' ? 'all' : command === 'dm-send' ? opts.id : opts.name;
+    if (opts['confirm-target'] !== target) throw new Error('Confirm the exact target with --confirm-target.');
+  }
+  return {action, params, endpoint, page, tab:opts.tab, contentFile:opts['content-file'], ...(opts['message-file'] ? {messageFile:opts['message-file']} : {})};
 }
 async function readContent(path) {
   if (path !== '-') { const info = await stat(path); if (!info.isFile() || info.size > 180000) throw new Error('Content must be a regular file under 180,000 bytes.'); }
@@ -113,7 +155,7 @@ export function socketURL(value, endpoint) {
   return url;
 }
 export function requestExpression(action, params, page) {
-  if (!Object.hasOwn(COMMANDS, action) && !['createPost','deletePost','commentUpvote','commentDownvote','commentRemoveUpvote','commentReadback'].includes(action)) throw new Error('Unsupported browser action.');
+  if (!Object.hasOwn(COMMANDS, action) && !Object.values(ALIASES).includes(action) && !['createPost','deletePost','commentUpvote','commentDownvote','commentRemoveUpvote','commentReadback'].includes(action)) throw new Error('Unsupported browser action.');
   const expected = JSON.stringify({origin:page.origin, pathname:page.pathname});
   const request = JSON.stringify({action, params});
   return `(async () => {
@@ -171,6 +213,7 @@ export async function main(args = process.argv.slice(2)) {
   const request = parseArgs(args); if (request.help) { process.stdout.write(HELP); return; }
   if (typeof WebSocket !== 'function') throw new Error('Use Node.js 22.4 or newer.');
   if (request.contentFile) request.params.content = await readContent(request.contentFile);
+  if (request.messageFile) request.params.message = await readContent(request.messageFile);
   const result = await executeBrowser(request);
   if (!result.ok) {
     if (result.receipt) process.stderr.write(JSON.stringify(result.receipt,null,2) + '\n');
