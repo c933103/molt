@@ -4,13 +4,13 @@
   <meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="referrer" content="no-referrer">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-kW2BVgxxEpfTJvisnTFMiSnueiHAHnU5oBj3GBw5HT8='; style-src 'none'; connect-src https://www.moltbook.com; base-uri 'none'; form-action 'none'; object-src 'none'">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-DzJtuRAjJh3FBhtOZ2jYuKHNgSgCwje5wX9Ony8Ma/w='; style-src 'none'; connect-src https://www.moltbook.com; base-uri 'none'; form-action 'none'; object-src 'none'">
   <title>Moltbook browser desk</title>
 </head>
 <body>
 <h1>Moltbook browser desk</h1>
 <p>Read, search and publish through Moltbook's API.</p>
-<p id="client-build">Build: comment-downvote-expected-v2</p>
+<p id="client-build">Build: comment-downvote-expected-v2; recovery-file-auto-connect-v1</p>
 <noscript><p>The page's markup uses HTML 4.0. API operations and encrypted saved credentials require JavaScript and a modern HTTPS browser. These buttons do not submit credentials without JavaScript.</p></noscript>
 <p><strong id="connection">Not connected</strong></p>
 <div id="connect-form">
@@ -28,10 +28,17 @@
   <p>After a successful Connect with a new key, this page automatically requests moltbook-pw123.zip. Connecting again with the current key, reloading a saved connection or restoring from a ZIP does not start another download.</p>
   <p id="recovery-status">If the automatic download does not appear, use Download recovery ZIP to try again. The page cannot confirm that your browser saved the file.</p>
   <p>Save moltbook-pw123.zip on your device or other storage. If that name already exists, your browser handles the filename conflict according to its download settings; this page cannot check existing files or force a prompt. It contains api-key.txt and opens with password 123. This file restores your connection even after all browser data is lost. Anyone with the file and password can recover the API key. Disconnect cannot delete copies you downloaded.</p>
-  <p><label for="recovery-file">Choose a previously downloaded recovery ZIP</label><br>
+  <p><label for="recovery-file">Choose a backup key file or recovery ZIP to connect automatically</label><br>
   <input id="recovery-file" type="file">
-  <button id="recovery-import" type="button">Restore from ZIP</button></p>
-  <p>The page reads the selected file locally, checks the recovered key with Moltbook, and saves the connection in this browser.</p>
+  <button id="recovery-import" type="button">Restore from file</button></p>
+  <p>The page reads the selected file locally, checks the recovered key with Moltbook, and saves the connection in this browser. Choose api-key.txt itself or a ZIP containing it. Password 123 is tried automatically; if it fails, enter the ZIP password below.</p>
+  <div id="recovery-password-form">
+    <p id="recovery-password-status">No ZIP password is needed unless requested here.</p>
+    <p><label for="recovery-password">ZIP password</label><br>
+    <input id="recovery-password" type="password" size="32" maxlength="512" disabled>
+    <button id="recovery-unlock" type="button" disabled>Unlock and connect</button>
+    <button id="recovery-cancel" type="button" disabled>Cancel import</button></p>
+  </div>
 </div>
 <h2>Using this with dot</h2>
 <ol>
@@ -216,6 +223,10 @@ class CredentialConflictError extends ClientError {
 }
 const KEY_PATTERN = /^[A-Za-z0-9_-]{16,512}$/;
 const COOKIE_AGE = 400 * 24 * 60 * 60;
+const RECOVERY_FILE_LIMIT = 8192, RECOVERY_KEY_LIMIT = 1024;
+class ZipPasswordError extends ClientError {
+  constructor() { super('The ZIP password did not unlock the key, or the ZIP is damaged.'); }
+}
 // Single-entry, stored-method ZIP with traditional PKWARE password encryption.
 // https://pkware.cachefly.net/webdocs/casestudies/APPNOTE.TXT (sections 4 and 6.1).
 // Password 123 is a requested format choice, not our security boundary: every
@@ -283,6 +294,71 @@ class CredentialZip {
       if (!KEY_PATTERN.test(value)) throw new Error('Invalid ZIP credential');
       return value;
     } finally { payload.fill(0); }
+  }
+  static keyFile(bytes) {
+    try {
+      if (!(bytes instanceof Uint8Array) || bytes.length < 16 || bytes.length > RECOVERY_KEY_LIMIT) throw new Error();
+      const key = new TextDecoder('utf-8',{fatal:true}).decode(bytes).trim();
+      if (!KEY_PATTERN.test(key)) throw new Error();
+      return key;
+    } catch { throw new ClientError('The backup file must contain only the API key as UTF-8 text.'); }
+  }
+  static async importArchive(zip, password = '123') {
+    // External import accepts ordinary single-file ZIP metadata and deflate.
+    // Keep unpack() strict for browser-storage compatibility. Never extract paths.
+    const invalid = () => new ClientError('This is not a valid recovery ZIP containing only api-key.txt, or it is damaged.');
+    if (!(zip instanceof Uint8Array) || zip.length < 22 || zip.length > RECOVERY_FILE_LIMIT) throw invalid();
+    const view = new DataView(zip.buffer,zip.byteOffset,zip.byteLength);
+    const u16 = o => view.getUint16(o,true), u32 = o => view.getUint32(o,true);
+    let e = zip.length - 22;
+    while (e >= 0 && (u32(e) !== 0x06054b50 || e + 22 + u16(e+20) !== zip.length)) e--;
+    if (e < 0 || u16(e+4) || u16(e+6) || u16(e+8) !== 1 || u16(e+10) !== 1) throw invalid();
+    const c = u32(e+16), centralSize = u32(e+12);
+    if (c < 30 || centralSize < 46 || c + centralSize !== e || u32(c) !== 0x02014b50) throw invalid();
+    const flags = u16(c+8), method = u16(c+10), crc = u32(c+16), packed = u32(c+20), size = u32(c+24);
+    const name = new TextEncoder().encode('api-key.txt');
+    if (method !== 0 && method !== 8 || flags & ~0x080f || u16(c+6) > 20) throw new ClientError('Unsupported ZIP compression or encryption. Extract api-key.txt with a ZIP reader and choose that file instead.');
+    if (size < 16 || size > RECOVERY_KEY_LIMIT || packed > RECOVERY_FILE_LIMIT || u16(c+28) !== name.length || 46 + name.length + u16(c+30) + u16(c+32) !== centralSize || u16(c+34) || u32(c+42)) throw invalid();
+    if (u32(0) !== 0x04034b50 || u16(4) !== u16(c+6) || u16(6) !== flags || u16(8) !== method || u16(10) !== u16(c+12) || u16(12) !== u16(c+14) || u16(26) !== name.length) throw invalid();
+    const start = 30 + name.length + u16(28), end = start + packed;
+    if (end > c || start > c) throw invalid();
+    for (let i = 0; i < name.length; i++) if (zip[30+i] !== name[i] || zip[c+46+i] !== name[i]) throw invalid();
+    if (flags & 8) {
+      const d = end + (c - end === 16 && u32(end) === 0x08074b50 ? 4 : 0);
+      if (d + 12 !== c || u32(d) !== crc || u32(d+4) !== packed || u32(d+8) !== size) throw invalid();
+      if (u32(14) && u32(14) !== crc || u32(18) && u32(18) !== packed || u32(22) && u32(22) !== size) throw invalid();
+    } else if (end !== c || u32(14) !== crc || u32(18) !== packed || u32(22) !== size) throw invalid();
+    const encrypted = Boolean(flags & 1), header = encrypted ? 12 : 0;
+    if (packed < header || method === 0 && packed - header !== size) throw invalid();
+    let decompressor;
+    if (method === 8) {
+      try { decompressor = new DecompressionStream('deflate-raw'); }
+      catch { throw new ClientError('This browser cannot decompress this ZIP. Extract api-key.txt with a ZIP reader and choose that file instead.'); }
+    }
+    const payload = encrypted ? this.#crypt(zip.subarray(start,end),password,true) : zip.subarray(start,end);
+    let plain;
+    try {
+      if (encrypted && payload[11] !== (flags & 8 ? u16(10) >>> 8 : crc >>> 24)) throw new ZipPasswordError();
+      if (method === 0) plain = payload.subarray(header);
+      else {
+        plain = new Uint8Array(size); let length = 0;
+        const source = new ReadableStream({start(controller) { controller.enqueue(payload.subarray(header)); controller.close(); }});
+        const reader = source.pipeThrough(decompressor).getReader();
+        try {
+          while (true) {
+            const {done,value} = await reader.read(); if (done) break;
+            try {
+              if (length + value.length > size) throw invalid();
+              plain.set(value,length); length += value.length;
+            } finally { value.fill(0); }
+          }
+          if (length !== size) throw invalid();
+        } catch { throw encrypted ? new ZipPasswordError() : invalid(); }
+        finally { await reader.cancel().catch(() => {}); reader.releaseLock(); }
+      }
+      if (this.#crc(plain) !== crc) throw encrypted ? new ZipPasswordError() : invalid();
+      return this.keyFile(plain);
+    } finally { if (encrypted) payload.fill(0); if (method === 8 && plain) plain.fill(0); }
   }
 }
 class CredentialVault {
@@ -772,7 +848,7 @@ class MoltbookSession {
 }
 // END CLIENT
 const $ = id => document.getElementById(id);
-const session = new MoltbookSession(); let preparedAction = null; let next = null, vault = null, recoveryDownloadUrl = null, connectionBusy = false, connectionGeneration = 0, connectionReady = Promise.resolve();
+const session = new MoltbookSession(); let preparedAction = null; let next = null, vault = null, recoveryDownloadUrl = null, pendingRecovery = null, connectionBusy = false, connectionGeneration = 0, connectionReady = Promise.resolve();
 try { vault = new CredentialVault(); } catch { /* HTTPS and storage support are reported when connecting. */ }
 function value(id) { return $(id).value; }
 function notice(message) { $('status').textContent = message; }
@@ -784,6 +860,10 @@ function sync() {
   $('next-page').disabled = connectionBusy || session.busy || !next;
   $('more-confirm').disabled = connectionBusy || session.busy || !preparedAction || !session.connected;
   $('recovery-download').disabled = connectionBusy || session.busy || !session.connected;
+  $('recovery-file').disabled = connectionBusy || session.busy;
+  $('recovery-password').disabled = connectionBusy || session.busy || !pendingRecovery;
+  $('recovery-unlock').disabled = connectionBusy || session.busy || !pendingRecovery;
+  $('recovery-cancel').disabled = !pendingRecovery;
 }
 function node(tag, text, className = '') { const el = document.createElement(tag); el.textContent = text; if (className) el.className = className; return el; }
 function button(label, handler) { const b = node('button', label); b.type = 'button'; b.addEventListener('click', handler); return b; }
@@ -969,6 +1049,7 @@ async function connectKey(key, generation, downloadRecovery = false) {
 action('connect-form', 'connect-button', async () => {
   if (connectionBusy || session.busy) return;
   const generation = ++connectionGeneration;
+  clearRecoveryImport();
   const input = $('api-key'); const key = input.value.trim(); input.value = '';
   connectionBusy = true; sync();
   try {
@@ -1015,26 +1096,65 @@ $('recovery-download').addEventListener('click', () => {
   if (connectionBusy || session.busy || !session.connected) return;
   requestRecoveryDownload();
 });
-$('recovery-import').addEventListener('click', async () => {
+function clearRecoveryImport() {
+  if (pendingRecovery) pendingRecovery.archive.fill(0);
+  pendingRecovery = null; $('recovery-password').value = '';
+  $('recovery-password-status').textContent = 'No ZIP password is needed unless requested here.';
+}
+async function importRecoveryFile() {
   if (connectionBusy || session.busy) return;
   const input = $('recovery-file'), file = input.files?.[0];
-  if (!file || !Number.isInteger(file.size) || file.size < 140 || file.size > 700) { input.value = ''; notice('Choose a recovery ZIP downloaded by this page (up to 700 bytes).'); return; }
-  const generation = ++connectionGeneration; connectionBusy = true; resetRecoveryDownload(); sync();
+  if (!file) return;
+  const generation = ++connectionGeneration; clearRecoveryImport();
+  if (!Number.isInteger(file.size) || file.size < 16 || file.size > RECOVERY_FILE_LIMIT) { input.value = ''; notice('Choose a backup key file or recovery ZIP (up to 8 KiB).'); sync(); return; }
+  connectionBusy = true; resetRecoveryDownload(); sync();
   let archive;
   try {
     archive = new Uint8Array(await file.arrayBuffer());
     if (generation !== connectionGeneration) return;
+    if (archive.length !== file.size) throw new ClientError('The recovery file could not be read completely.');
     let key;
-    try { key = CredentialZip.unpack(archive); } catch { throw new ClientError('This is not a valid recovery ZIP from this page, or it is damaged.'); }
+    const isZip = archive[0] === 0x50 && archive[1] === 0x4b && archive[2] === 3 && archive[3] === 4;
+    try { key = isZip ? await CredentialZip.importArchive(archive) : CredentialZip.keyFile(archive); }
+    catch (err) {
+      if (generation !== connectionGeneration) return;
+      if (!(err instanceof ZipPasswordError)) throw err;
+      pendingRecovery = {archive,generation}; archive = null;
+      $('recovery-password-status').textContent = 'Password 123 did not unlock this ZIP. Enter its password, or cancel the import. A damaged ZIP can also fail this check.';
+      notice('Enter the ZIP password below to connect.'); return;
+    }
     await connectKey(key,generation);
-  } catch (err) { if (generation === connectionGeneration) notice(err instanceof ClientError ? err.message : 'The recovery ZIP could not be read.'); }
+  } catch (err) { if (generation === connectionGeneration) notice(err instanceof ClientError ? err.message : 'The recovery file could not be read.'); }
   finally {
     if (archive) archive.fill(0); input.value = '';
-    if (generation === connectionGeneration) { connectionBusy = false; sync(); }
+    if (generation === connectionGeneration) { connectionBusy = false; sync(); if (pendingRecovery) $('recovery-password').focus(); }
   }
+}
+$('recovery-file').addEventListener('change', importRecoveryFile);
+$('recovery-import').addEventListener('click', importRecoveryFile);
+action('recovery-password-form','recovery-unlock',async () => {
+  if (connectionBusy || session.busy || !pendingRecovery) return;
+  const pending = pendingRecovery, generation = pending.generation;
+  let password = $('recovery-password').value; $('recovery-password').value = '';
+  if (password.length > 512) { notice('The ZIP password is too long.'); return; }
+  connectionBusy = true; sync();
+  try {
+    const key = await CredentialZip.importArchive(pending.archive,password);
+    if (generation !== connectionGeneration || pending !== pendingRecovery) return;
+    clearRecoveryImport(); await connectKey(key,generation);
+  } catch (err) {
+    if (generation !== connectionGeneration || pending !== pendingRecovery) return;
+    if (err instanceof ZipPasswordError) $('recovery-password-status').textContent = 'That password did not unlock the ZIP. Try again, or cancel if the ZIP is damaged.';
+    else { clearRecoveryImport(); notice(err instanceof ClientError ? err.message : 'The recovery file could not be read.'); }
+  } finally { password = ''; if (generation === connectionGeneration) { connectionBusy = false; sync(); if (pendingRecovery) $('recovery-password').focus(); } }
+});
+$('recovery-cancel').addEventListener('click', () => {
+  if (!pendingRecovery) return;
+  connectionGeneration++; clearRecoveryImport(); connectionBusy = false; notice('Recovery import cancelled.'); sync();
 });
 $('disconnect').addEventListener('click', async () => {
   const generation = ++connectionGeneration; cancelPrepared(); session.disconnect(); connectionBusy = true;
+  clearRecoveryImport();
   resetRecoveryDownload(); $('recovery-file').value = '';
   $('api-key').value = ''; next = null; $('next-page').disabled = true; $('results').replaceChildren(node('p', 'Disconnected.')); setRaw(undefined); $('verification-code').value = ''; $('challenge').textContent = 'No publishing challenge has been returned.';
   notice('Disconnected. Removing the saved credential…'); sync();
@@ -1104,7 +1224,7 @@ async function restoreConnection() {
     if (generation === connectionGeneration) notice(err instanceof ClientError ? err.message : 'Connect this browser again.', 'error');
   } finally { if (generation === connectionGeneration) { connectionBusy = false; sync(); } }
 }
-window.addEventListener('pagehide', () => { connectionGeneration++; cancelPrepared(); connectionBusy = false; session.disconnect(); revokeRecoveryDownload(); });
+window.addEventListener('pagehide', () => { connectionGeneration++; cancelPrepared(); clearRecoveryImport(); connectionBusy = false; session.disconnect(); revokeRecoveryDownload(); });
 window.addEventListener('pageshow', () => { connectionReady = restoreConnection(); });
 // The CLI invokes this interface in the page. No credential-reading operation is exposed.
 Object.defineProperty(window, 'moltbookDesk', {value:Object.freeze({

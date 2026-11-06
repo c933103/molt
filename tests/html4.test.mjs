@@ -91,7 +91,7 @@ function pageFixture(options = {}) {
     static createObjectURL(blob) { options.beforeObjectURL?.(); downloads.push(blob); return 'blob:https://c933103.github.io/synthetic-' + downloads.length; }
     static revokeObjectURL(url) { revoked.push(url); }
   }
-  const context = {document,window,URL:BrowserURL,URLSearchParams,AbortController,TextDecoder,TextEncoder,Uint8Array,Blob,crypto:options.crypto || webcrypto,btoa,atob,setTimeout,clearTimeout,
+  const context = {document,window,URL:BrowserURL,URLSearchParams,AbortController,TextDecoder,TextEncoder,Uint8Array,Blob,DecompressionStream,ReadableStream,crypto:options.crypto || webcrypto,btoa,atob,setTimeout,clearTimeout,
     ...(options.storage ? {indexedDB:options.storage.indexedDB,sessionStorage:options.storage.sessionStorage,location:{href:'https://c933103.github.io/molt/'}} : {})};
   const fixtureOptions = options;
   context.fetch = async (url,options) => {
@@ -171,6 +171,91 @@ test('native controls connect, download and restore an external ZIP, and share t
   finishRead(await downloads[0].arrayBuffer()); await importing;
   assert.equal(calls.length,5,'An import cancelled by Disconnect cannot authenticate');
   assert.equal((await window.moltbookDesk.execute('connection')).data.connected,false);
+});
+
+function recoveryArchive(key = KEY,password = '123') {
+  const context = {TextEncoder,TextDecoder,Uint8Array};
+  const core = html.match(/\/\/ BEGIN CLIENT\n([\s\S]*?)\/\/ END CLIENT/)[1];
+  vm.runInNewContext(core+'\nthis.Zip = CredentialZip;',context);
+  return context.Zip.pack(key,webcrypto,password);
+}
+test('selecting a plain backup or ZIP connects automatically without exporting or uploading the file', async t => {
+  for (const [name,contents] of [['key',new TextEncoder().encode('\ufeff'+KEY+'\r\n')],['zip',recoveryArchive()]]) await t.test(name,async () => {
+    const storage = savedStorage(), f = pageFixture({storage}); await f.window.moltbookDesk.execute('connection');
+    f.elements.get('recovery-file').files=[new Blob([contents],{type:'application/octet-stream'})];
+    await f.elements.get('recovery-file').events.change();
+    assert.equal(f.calls.length,1); assert.equal(f.calls[0].url,'https://www.moltbook.com/api/v1/agents/me');
+    assert.equal(f.calls[0].options.headers.Authorization,'Bearer '+KEY); assert.equal(f.calls[0].options.body,undefined);
+    assert.equal(f.downloads.length,0); assert.equal(f.elements.get('recovery-file').value,'');
+    assert.equal(f.elements.get('recovery-password').disabled,true);
+    assert.equal(f.elements.get('status').textContent.includes(KEY),false);
+    const restored = pageFixture({storage});
+    assert.equal((await restored.window.moltbookDesk.execute('connection')).data.connected,true);
+    assert.equal(restored.calls.length,0);
+  });
+});
+test('a non-default ZIP password prompts, supports wrong-password retry, and connects once on Enter', async () => {
+  const f = pageFixture(), password=' private zip password ';
+  f.elements.get('recovery-file').files=[new Blob([recoveryArchive(KEY,password)])];
+  await f.elements.get('recovery-file').events.change();
+  assert.equal(f.calls.length,0); assert.equal(f.elements.get('recovery-unlock').disabled,false);
+  assert.match(f.elements.get('recovery-password-status').textContent,/Password 123 did not unlock/);
+  f.elements.get('recovery-password').value='wrong';
+  await f.elements.get('recovery-unlock').events.click();
+  assert.equal(f.calls.length,0); assert.equal(f.elements.get('recovery-password').value,'');
+  assert.match(f.elements.get('recovery-password-status').textContent,/Try again/);
+  f.elements.get('recovery-password').value=password;
+  let prevented=false;
+  f.elements.get('recovery-password-form').events.keydown({key:'Enter',target:{tagName:'INPUT'},preventDefault() { prevented=true; }});
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(prevented,true); assert.equal(f.calls.length,1);
+  assert.equal(f.calls[0].options.headers.Authorization,'Bearer '+KEY);
+  assert.equal(f.elements.get('recovery-password').value,''); assert.equal(f.elements.get('recovery-unlock').disabled,true);
+  assert.equal(f.downloads.length,0);
+});
+test('cancel, disconnect, pagehide, replacement file and manual Connect discard pending ZIP passwords', async t => {
+  for (const action of ['cancel','disconnect','pagehide','replacement','connect']) await t.test(action,async () => {
+    const f = pageFixture();
+    f.elements.get('recovery-file').files=[new Blob([recoveryArchive(KEY,'secret')])];
+    await f.elements.get('recovery-file').events.change();
+    f.elements.get('recovery-password').value='secret';
+    if (action==='cancel') await f.elements.get('recovery-cancel').events.click();
+    if (action==='disconnect') await f.elements.get('disconnect').events.click();
+    if (action==='pagehide') f.events.pagehide();
+    if (action==='replacement') {
+      f.elements.get('recovery-file').files=[new Blob([KEY])]; await f.elements.get('recovery-file').events.change();
+    }
+    if (action==='connect') await f.connect();
+    assert.equal(f.elements.get('recovery-password').value,'');
+    const calls=f.calls.length;
+    await f.elements.get('recovery-unlock').events.click(); assert.equal(f.calls.length,calls);
+    if (action==='pagehide') { f.events.pageshow(); await f.window.moltbookDesk.execute('connection'); }
+    assert.equal(f.elements.get('recovery-unlock').disabled,true);
+    assert.equal(calls,action==='replacement'||action==='connect' ? 1 : 0);
+  });
+});
+test('cancelled unlock cannot authenticate after its asynchronous extraction completes', async () => {
+  const f=pageFixture();
+  f.elements.get('recovery-file').files=[new Blob([recoveryArchive(KEY,'secret')])];
+  await f.elements.get('recovery-file').events.change();
+  f.elements.get('recovery-password').value='secret';
+  const pending=f.elements.get('recovery-unlock').events.click();
+  f.elements.get('recovery-cancel').events.click(); await pending;
+  assert.equal(f.calls.length,0); assert.equal((await f.window.moltbookDesk.execute('connection')).data.connected,false);
+});
+test('bad backup contents and read failures are sanitized and never authenticate', async () => {
+  const f=pageFixture();
+  for (const file of [new Blob(['Bearer '+KEY]),new Blob(['\xff'+KEY]),{size:10000,arrayBuffer() { throw new Error('must not read'); }},{size:32,arrayBuffer() { throw new Error(KEY); }}]) {
+    f.elements.get('recovery-file').files=[file]; await f.elements.get('recovery-file').events.change();
+    assert.equal(f.calls.length,0); assert.equal(f.elements.get('status').textContent.includes(KEY),false);
+    assert.equal(f.elements.get('recovery-file').value,''); assert.equal(f.elements.get('recovery-unlock').disabled,true);
+  }
+});
+test('text keys beginning with PK are still treated as backup text, regardless of the filename', async () => {
+  const f=pageFixture(), key='PK_fixture_valid_text_key';
+  f.elements.get('recovery-file').files=[new Blob([key],{type:'application/zip'})];
+  await f.elements.get('recovery-file').events.change();
+  assert.equal(f.calls.length,1); assert.equal(f.calls[0].options.headers.Authorization,'Bearer '+key);
 });
 
 // Synthetic storage shared across page instances; real Web Crypto still seals the ZIP.
