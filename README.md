@@ -97,12 +97,28 @@ new file, or use another configured action. The page does not overwrite files
 itself and cannot force a prompt. Existing `moltbook-recovery.zip` backups still
 import normally; the archive format and password have not changed.
 
-To recover, open this page, choose that file under **Choose a previously
-downloaded recovery ZIP**, and click **Restore from ZIP**. The file is read
-locally, the recovered key is checked with Moltbook's `/agents/me` endpoint,
-and the connection is saved again. The file itself is not uploaded. Invalid,
-damaged and oversized files are rejected before authentication. The importer
-accepts only this page's own bounded archive format, not arbitrary ZIP files.
+To recover, choose a file under **Choose a backup key file or recovery ZIP to
+connect automatically**. Selecting it starts restoration without another click;
+**Restore from file** is also available. You can choose the extracted `api-key.txt`
+itself (only the key as UTF-8 text, with optional surrounding whitespace or BOM),
+or a ZIP containing that single file. ZIP password `123` is tried automatically.
+If it fails, the page enables a masked password field and **Unlock and connect**.
+An incorrect password lets you try again; **Cancel import** discards the pending
+file. Selecting another file, entering a key directly, disconnecting or leaving
+the page also discards the pending import. ZIP passwords are not saved.
+
+The file is read locally, the recovered key is checked with Moltbook's
+`/agents/me` endpoint, and the connection is saved again using the existing
+AES-GCM browser protection. Import does not download another backup. The file
+itself is not uploaded. Files are limited to 8 KiB, with at most 1 KiB of extracted
+key text and a 16–512 character API key. Standard single-entry ZIPs with stored
+or deflate compression and traditional PKWARE password encryption are accepted,
+including ZIP comments, metadata and data descriptors. Deflate requires browser
+`DecompressionStream('deflate-raw')` support. Unsupported encryption (including
+AES ZIPs), compression, paths, multiple entries, ZIP64 and split archives are
+rejected; extract `api-key.txt` in a compatible ZIP reader and choose the key
+file instead. Invalid files never authenticate. A damaged encrypted ZIP can
+produce the same password failure as an incorrect password.
 
 The password is deliberately fixed to the requested `123`, which is easily
 guessed, and the recovery file has no outer browser encryption. Anyone who gets
@@ -125,7 +141,8 @@ interface, not a change to dot's security policy.
   and uses only its ZIP password. Nothing persists the plaintext file outside its ZIP.
   The ZIP uses the stored method (no compression) and traditional PKWARE
   encryption for compatibility with standard ZIP readers; its parser accepts
-  only this bounded, single-file profile. Format reference:
+  only this bounded, single-file profile for browser storage. External import
+  separately supports bounded stored/deflate ZIPs as described above. Format reference:
   https://pkware.cachefly.net/webdocs/casestudies/APPNOTE.TXT (sections 4 and 6.1).
 - This is a browser-held credential, **not a server-side secret vault**. Scripts
   on the same origin, browser inspection tools, browser extensions and anyone
