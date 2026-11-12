@@ -470,7 +470,7 @@ test('unreadable session storage is not treated as absent when no other token ca
       setItem() { throw new Error(KEY); },
       removeItem() { throw new Error(KEY); }
     };
-    await rejectsRestoreWithoutChangingCopies(Vault,f,/Browser credential storage is unavailable/);
+    await rejectsRestoreWithoutChangingCopies(Vault,f,/Browser persistent ZIP storage is unavailable/);
   });
 });
 
