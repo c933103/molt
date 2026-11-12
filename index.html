@@ -11,7 +11,7 @@
 <h1>Moltbook browser desk</h1>
 <p>Read, search and publish through Moltbook's API.</p>
 <p id="client-build">Build: comment-downvote-expected-v2; portable-zip-storage-v1</p>
-<noscript><p>The page's markup uses HTML 4.0. API operations and encrypted saved credentials require JavaScript and a modern HTTPS browser. These buttons do not submit credentials without JavaScript.</p></noscript>
+<noscript><p>The page's markup uses HTML 4.0. API operations and saved recovery ZIPs require JavaScript and a modern HTTPS browser. These buttons do not submit credentials without JavaScript.</p></noscript>
 <p><strong id="connection">Not connected</strong></p>
 <div id="connect-form">
   <h2>Connect this browser</h2>
@@ -21,7 +21,7 @@
   <button id="connect-button" type="button">Connect</button></p>
 </div>
 <p><button id="disconnect" type="button">Forget saved key</button></p>
-<p>This browser saves a Base64-encoded password-protected recovery ZIP (api-key.txt, password 123) in persistent local browser storage. It restores without a separate AES key. Base64 does not add encryption, and password 123 is weak. No scheduled renewal is needed. Forget saved key removes browser copies.</p>
+<p>This browser saves the generated password-protected recovery ZIP (api-key.txt, password 123) as Base64 in persistent browser storage. It restores that ZIP directly. Base64 does not add encryption, and password 123 is weak. Forget saved key removes the browser copy.</p>
 <div id="recovery-panel">
   <h2>Recovery file outside the browser</h2>
   <p><button id="recovery-download" type="button" disabled>Download recovery ZIP</button></p>
@@ -48,7 +48,7 @@
   <li>Ask dot to use the page's buttons and input fields. It does not need to copy the key.</li>
 </ol>
 <p>Your personal browser and dot's cloud browser have separate sessions. A website cannot override dot's action permissions.</p>
-<p>New connections save the password-123 ZIP as Base64 in this origin's localStorage, not in cookies or IndexedDB. The Base64 copy is not deliberately transmitted to GitHub, but website scripts, browser extensions and anyone controlling this browser can read it and recover the API key using the weak ZIP password. Existing AES-encrypted cookie, session and IndexedDB records are read only for legacy recovery. Clearing browser data or changing browser profiles can erase the stored ZIP. Only use a copy whose source you trust.</p>
+<p>New connections save the password-123 ZIP as Base64 in this origin's localStorage, without another encryption key. The Base64 copy is not deliberately transmitted to GitHub, but same-origin scripts, browser extensions and anyone controlling this browser can read it and recover the key using password 123. Clearing browser data or changing browser profiles can erase the stored ZIP. Only use a copy whose source you trust.</p>
 <h2>CLI access</h2>
 <p><a href="cli.mjs">Download cli.mjs</a> and run it with Node.js 22.4 or newer. It uses this page's saved connection through a local Chrome/Chromium debugging endpoint. No API key is passed to the CLI.</p>
 <pre>node cli.mjs connection
@@ -230,7 +230,7 @@ class ZipPasswordError extends ClientError {
 // Single-entry, stored-method ZIP with traditional PKWARE password encryption.
 // https://pkware.cachefly.net/webdocs/casestudies/APPNOTE.TXT (sections 4 and 6.1).
 // Password 123 is a requested, weak format choice; Base64 does not add security.
-// New persistent copies are the portable ZIP itself. AES is for legacy recovery.
+// Browser storage contains the portable ZIP itself, with no additional AES layer.
 class CredentialZip {
   static #table = Uint32Array.from({length:256}, (_, i) => {
     let c = i; for (let n = 0; n < 8; n++) c = (c >>> 1) ^ ((c & 1) ? 0xedb88320 : 0); return c >>> 0;
@@ -362,215 +362,83 @@ class CredentialZip {
   }
 }
 class CredentialVault {
-  #doc; #idb; #crypto; #tab; #persistent; #scope; #path; #generation = 0; #queue = Promise.resolve();
-  constructor({document:doc = document, indexedDB:idb, crypto:crypt, location:loc = location, sessionStorage:tabStore, localStorage:persistentStore} = {}) {
-    this.#doc = doc;
-    // Missing or denied browser APIs must reach the sanitized restore diagnostics.
-    try { this.#idb = idb === undefined ? globalThis.indexedDB : idb; } catch { this.#idb = null; }
+  #crypto; #persistent; #scope; #generation = 0; #queue = Promise.resolve();
+  constructor({crypto:crypt, location:loc = location, localStorage:persistentStore} = {}) {
     try { this.#crypto = crypt === undefined ? globalThis.crypto : crypt; } catch { this.#crypto = null; }
-    try { this.#tab = tabStore === undefined ? globalThis.sessionStorage : tabStore; } catch { this.#tab = null; }
     try { this.#persistent = persistentStore === undefined ? globalThis.localStorage : persistentStore; } catch { this.#persistent = null; }
-    const url = new URL(loc.href); this.#path = new URL('.', url).pathname;
-    if (url.protocol !== 'https:' || !/^\/[A-Za-z0-9/_%.-]*$/.test(this.#path)) throw new ClientError('Remembering the key requires an HTTPS page.');
-    this.#scope = url.origin + this.#path;
+    const url = new URL(loc.href), path = new URL('.',url).pathname;
+    if (url.protocol !== 'https:' || !/^\/[A-Za-z0-9/_%.-]*$/.test(path)) throw new ClientError('Remembering the key requires an HTTPS page.');
+    // This is a record name, not a boundary against other same-origin apps.
+    this.#scope = url.origin + path;
   }
+  #name() { return 'moltbook-browser-desk-recovery-zip-v1|' + this.#scope; }
   #schedule(work) {
-    const pending = this.#queue.then(work); this.#queue = pending.catch(() => {}); return pending;
+    const pending = this.#queue.then(work);
+    this.#queue = pending.catch(() => {});
+    return pending;
   }
-  #cookie() {
-    const matches = this.#doc.cookie.split(';').map(c => c.trim()).filter(c => c.startsWith('__Secure-moltbook-desk-v1='));
-    if (matches.length > 1) throw new CredentialConflictError();
-    return matches.length ? matches[0].slice('__Secure-moltbook-desk-v1='.length) : '';
-  }
-  #expire() { this.#doc.cookie = '__Secure-moltbook-desk-v1=; Path=' + this.#path + '; Max-Age=0; Secure; SameSite=Strict'; }
-  #tabName() { return 'moltbook-browser-desk-v1|' + this.#scope; }
-  #portableName() { return 'moltbook-browser-desk-recovery-zip-v1|' + this.#scope; }
-  #tabToken(reportFailure = false) {
-    try {
-      if (reportFailure && !this.#tab) throw new Error('Session storage unavailable');
-      return this.#tab?.getItem(this.#tabName()) || '';
-    } catch (err) { if (reportFailure) throw err; return ''; }
-  }
-  #cache(token) { try { this.#tab?.setItem(this.#tabName(),token); } catch { /* Cookie and IndexedDB remain available. */ } }
-  #open() {
-    if (!this.#idb || !this.#crypto?.subtle) return Promise.reject(new ClientError('This browser cannot save the credential securely.'));
-    return new Promise((resolve, reject) => {
-      let settled = false;
-      const timer = setTimeout(() => { settled = true; reject(new ClientError('Browser credential storage is unavailable.')); }, 5000);
-      let req;
-      try { req = this.#idb.open('moltbook-browser-desk-v1', 1); } catch { clearTimeout(timer); reject(new ClientError('Browser credential storage is unavailable.')); return; }
-      req.onupgradeneeded = () => { if (!req.result.objectStoreNames.contains('keys')) req.result.createObjectStore('keys'); };
-      req.onsuccess = () => {
-        clearTimeout(timer); if (settled) { req.result.close(); return; } settled = true;
-        req.result.onversionchange = () => req.result.close(); resolve(req.result);
-      };
-      req.onerror = req.onblocked = () => { clearTimeout(timer); settled = true; reject(new ClientError('Browser credential storage is unavailable.')); };
-    });
-  }
-  async #stored(mode, createKey = null, remove = false, record = null) {
-    const db = await this.#open();
-    try {
-      return await new Promise((resolve, reject) => {
-        let result = {key:null, token:''}, tx;
-        try { tx = db.transaction('keys', mode); } catch { reject(new ClientError('Browser credential storage is unavailable.')); return; }
-        tx.oncomplete = () => resolve(result);
-        tx.onerror = tx.onabort = () => reject(new ClientError('Browser credential storage could not be updated.'));
-        const store = tx.objectStore('keys');
-        if (remove) { store.delete(this.#scope); store.delete(this.#scope + '|ciphertext'); return; }
-        if (record) {
-          // Commit the wrapping key and ciphertext together; the browser backup is authoritative.
-          store.put(record.key, this.#scope); store.put(record.token, this.#scope + '|ciphertext'); result = record; return;
-        }
-        const req = store.get(this.#scope);
-        req.onsuccess = () => {
-          result.key = req.result || null;
-          if (!result.key && createKey) { result.key = createKey; store.put(createKey, this.#scope); }
-        };
-        const tokenReq = store.get(this.#scope + '|ciphertext');
-        tokenReq.onsuccess = () => { result.token = typeof tokenReq.result === 'string' ? tokenReq.result : ''; };
-      });
-    } finally { db.close(); }
-  }
-  #validKey(key) { return key && key.extractable === false && key.algorithm?.name === 'AES-GCM' && key.algorithm?.length === 256 && key.usages.includes('encrypt') && key.usages.includes('decrypt'); }
-  #aad(version) { return new TextEncoder().encode('Moltbook browser desk v' + version + '|' + this.#scope); }
-  async #seal(value, key) {
-    const iv = this.#crypto.getRandomValues(new Uint8Array(12)), zip = CredentialZip.pack(value,this.#crypto);
-    let encrypted;
-    try { encrypted = new Uint8Array(await this.#crypto.subtle.encrypt({name:'AES-GCM', iv, additionalData:this.#aad(2), tagLength:128}, key, zip)); }
-    finally { zip.fill(0); }
-    const bytes = new Uint8Array(iv.length + encrypted.length); bytes.set(iv); bytes.set(encrypted,iv.length);
-    return 'v2.' + btoa(String.fromCharCode(...bytes)).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
-  }
-  #savePortable(value, generation) {
-    if (generation !== this.#generation) return false;
-    if (!this.#persistent) throw new ClientError('Browser persistent ZIP storage is unavailable. The credential was not saved.');
-    if (!this.#crypto || typeof this.#crypto.getRandomValues !== 'function') throw new ClientError('Web Crypto is unavailable. A recovery ZIP could not be generated.');
-    const zip = CredentialZip.pack(value,this.#crypto);
-    try {
-      // Store the actual ZIP bytes as Base64, without a browser-key AES wrapper.
-      const base64 = btoa(String.fromCharCode(...zip));
-      this.#persistent.setItem(this.#portableName(),base64);
-      if (this.#persistent.getItem(this.#portableName()) !== base64) throw new Error('Persistent ZIP write did not round-trip');
-    } catch { throw new ClientError('The browser could not save the recovery ZIP. Existing copies were not deliberately removed.'); }
-    finally { zip.fill(0); }
-    return true;
-  }
-  #readPortable() {
-    if (!this.#persistent) throw new ClientError('Browser persistent ZIP storage is unavailable. Saved connection status could not be checked. Saved copies were not removed.');
-    let base64;
-    try { base64 = this.#persistent.getItem(this.#portableName()); }
-    catch { throw new ClientError('Browser persistent ZIP storage is unavailable. Saved connection status could not be checked. Saved copies were not removed.'); }
-    if (base64 === null) return null;
-    const invalid = () => new ClientError('The saved recovery ZIP is invalid. Saved copies were not removed. Restore a downloaded ZIP or connect again.');
-    if (typeof base64 !== 'string' || base64.length < 188 || base64.length > 936 || base64.length % 4 !== 0 || !/^[A-Za-z0-9+/]+={0,2}$/.test(base64)) throw invalid();
-    let zip;
-    try {
-      zip = Uint8Array.from(atob(base64), c => c.charCodeAt(0));
-      if (btoa(String.fromCharCode(...zip)) !== base64) throw new Error('Noncanonical Base64');
-      return CredentialZip.unpack(zip,'123');
-    } catch { throw invalid(); }
-    finally { if (zip) zip.fill(0); }
-  }
-  save(value) {
+  save(value, archive = null) {
     const generation = this.#generation;
     return this.#schedule(async () => {
       if (typeof value !== 'string' || !KEY_PATTERN.test(value)) throw new ClientError('Invalid credential.');
-      return this.#savePortable(value,generation);
-    });
-  }
-  async #restoreLegacy(generation) {
-      // Report only the stage that failed, never browser exception details or saved values.
-      let failure = 'Browser credential storage is unavailable. Saved connection status could not be checked. Reload to retry; saved copies were not removed.';
+      if (generation !== this.#generation) return false;
+      if (!this.#persistent) throw new ClientError('Browser persistent ZIP storage is unavailable. The credential was not saved.');
+      let zip = archive, ownsZip = false;
       try {
-        if (!this.#crypto?.subtle) {
-          failure = 'Web Crypto is unavailable in this browser. Saved connection status could not be checked securely. Saved copies were not removed.';
-          throw new Error('Web Crypto unavailable');
+        if (zip === null) {
+          if (!this.#crypto || typeof this.#crypto.getRandomValues !== 'function') throw new ClientError('Web Crypto is unavailable. A recovery ZIP could not be generated.');
+          zip = CredentialZip.pack(value,this.#crypto); ownsZip = true;
+        } else if (!(zip instanceof Uint8Array) || CredentialZip.unpack(zip,'123') !== value) {
+          throw new ClientError('The recovery ZIP does not match the connected credential.');
         }
-        const {key, token:backup} = await this.#stored('readonly');
-        if (generation !== this.#generation) return null;
-        let token = backup;
-        if (!token) {
-          let sessionUnavailable = false;
-          try { token = this.#tabToken(true); } catch { sessionUnavailable = true; }
-          // A readable cookie remains a valid fallback when the session cache is blocked.
-          token ||= this.#cookie();
-          if (!token && sessionUnavailable) throw new Error('Session storage unavailable');
-        }
-        if (!token) return null;
-        failure = 'The saved credential could not be restored because its encrypted record is invalid. Saved copies were not removed.';
-        if (!/^v[12]\.[A-Za-z0-9_-]{40,1600}$/.test(token)) throw new Error('Invalid envelope');
-        const version = Number(token[1]);
-        const encoded = token.slice(3).replace(/-/g,'+').replace(/_/g,'/');
-        const bytes = Uint8Array.from(atob(encoded), c => c.charCodeAt(0));
-        failure = 'The saved credential could not be restored because its browser encryption key is missing. Saved copies were not removed.';
-        if (!key) throw new Error('Missing encryption key');
-        failure = 'The saved credential could not be restored because its browser encryption key is invalid. Saved copies were not removed.';
-        if (!this.#validKey(key)) throw new Error('Invalid encryption key');
-        failure = 'The saved credential could not be restored because decryption failed. Saved copies were not removed.';
-        const plain = new Uint8Array(await this.#crypto.subtle.decrypt({name:'AES-GCM', iv:bytes.slice(0,12), additionalData:this.#aad(version), tagLength:128}, key, bytes.slice(12)));
-        let value;
-        failure = 'The saved credential could not be restored because its decrypted contents failed validation. Saved copies were not removed.';
-        try { value = version === 2 ? CredentialZip.unpack(plain) : JSON.parse(new TextDecoder().decode(plain)).key; } finally { plain.fill(0); }
-        if (generation !== this.#generation) return null;
-        if (typeof value !== 'string' || !KEY_PATTERN.test(value)) throw new Error('Invalid credential');
-        if (version === 1) {
-          // Upgrade existing connections without rewriting or renewing their cookie.
-          failure = 'The saved credential could not be restored because its storage upgrade could not be completed. Reload to retry; saved copies were not removed.';
-          token = await this.#seal(value,key);
-          if (generation !== this.#generation) return null;
-          await this.#stored('readwrite',null,false,{key,token});
-          if (generation !== this.#generation) return null;
-        }
-        this.#cache(token);
-        return value;
+        if (generation !== this.#generation) return false;
+        const base64 = btoa(String.fromCharCode(...zip));
+        this.#persistent.setItem(this.#name(),base64);
+        // A synchronous storage hook may trigger Forget; never report that as a successful save.
+        if (generation !== this.#generation) return false;
+        if (this.#persistent.getItem(this.#name()) !== base64) throw new Error('Storage round-trip failed');
+        return true;
       } catch (err) {
-        if (generation !== this.#generation) return null;
-        // Retain every existing copy, including on transient storage failures.
-        if (err instanceof CredentialConflictError) failure = 'Conflicting saved credential cookies were found. Saved copies were not removed. Use Forget saved key to disconnect; if copies remain, clear this site\'s cookies and storage before connecting again.';
-        throw new ClientError(failure);
+        if (err instanceof ClientError) throw err;
+        throw new ClientError('The browser could not save the recovery ZIP. Existing copies were not deliberately removed.');
+      } finally {
+        if (ownsZip) zip.fill(0);
       }
+    });
   }
   restore() {
     const generation = this.#generation;
     return this.#schedule(async () => {
-      let portableFailure;
-      try {
-        const key = this.#readPortable();
-        if (generation !== this.#generation) return null;
-        if (key) return key;
-      } catch (err) {
-        if (generation !== this.#generation) return null;
-        // Corrupt present ZIP must not silently authenticate a stale legacy key.
-        if (err instanceof ClientError && err.message.startsWith('The saved recovery ZIP is invalid')) throw err;
-        portableFailure = err;
-      }
-      let key;
-      try { key = await this.#restoreLegacy(generation); }
-      catch (err) {
-        if (generation !== this.#generation) return null;
-        if (portableFailure && err.message.startsWith('Browser credential storage is unavailable')) throw portableFailure;
-        throw err;
-      }
+      const unavailable = () => new ClientError('Browser persistent ZIP storage is unavailable. Saved connection status could not be checked. Saved copies were not removed.');
+      if (!this.#persistent) throw unavailable();
+      let base64;
+      try { base64 = this.#persistent.getItem(this.#name()); }
+      catch { throw unavailable(); }
       if (generation !== this.#generation) return null;
-      if (!key) {
-        if (portableFailure) throw portableFailure;
-        return null;
-      }
-      // Reading old AES records migrates to a standalone ZIP if possible.
-      try { this.#savePortable(key,generation); }
-      catch { /* Legacy copies remain; current tab can still connect. */ }
-      return key;
+      if (base64 === null) return null;
+      const invalid = () => new ClientError('The saved recovery ZIP is invalid. Saved copies were not removed. Restore a downloaded ZIP or connect again.');
+      if (typeof base64 !== 'string' || base64.length < 188 || base64.length > 936 || base64.length % 4 !== 0 || !/^[A-Za-z0-9+/]+={0,2}$/.test(base64)) throw invalid();
+      let zip;
+      try {
+        zip = Uint8Array.from(atob(base64), c => c.charCodeAt(0));
+        if (btoa(String.fromCharCode(...zip)) !== base64) throw new Error('Noncanonical Base64');
+        const value = CredentialZip.unpack(zip,'123');
+        return generation === this.#generation ? value : null;
+      } catch { if (generation !== this.#generation) return null; throw invalid(); }
+      finally { if (zip) zip.fill(0); }
     });
   }
   forget() {
     this.#generation++;
-    let cleared = true;
-    try { this.#expire(); cleared = !this.#cookie(); } catch { cleared = false; }
-    try { this.#tab?.removeItem(this.#tabName()); if (this.#tabToken()) cleared = false; } catch { cleared = false; }
-    try { this.#persistent?.removeItem(this.#portableName()); if (!this.#persistent || this.#persistent.getItem(this.#portableName()) !== null) cleared = false; } catch { cleared = false; }
+    let removed = false;
+    try {
+      if (this.#persistent) {
+        this.#persistent.removeItem(this.#name());
+        removed = this.#persistent.getItem(this.#name()) === null;
+      }
+    } catch { /* Never claim that removal succeeded if storage is blocked. */ }
     return this.#schedule(async () => {
-      await this.#stored('readwrite', null, true);
-      if (!cleared) throw new ClientError('The browser did not remove all saved copies. Clear this site’s cookies and storage.');
+      if (!removed) throw new ClientError('The browser did not remove the saved recovery ZIP. Clear this site\'s storage.');
     });
   }
 }
@@ -1080,19 +948,29 @@ async function connectKey(key, generation, downloadRecovery = false) {
   if (generation !== connectionGeneration) return;
   try { session.connect(key); } catch (err) { notice(err.message, 'error'); return; }
   connectionBusy = true; sync();
+  let archive = null;
   try {
     const data = await run('me');
     if (generation !== connectionGeneration) return;
     if (!data) { session.disconnect(); return; }
+    if (downloadRecovery) {
+      try { archive = session.recoveryArchive(crypto); }
+      catch { /* The ordinary download retry reports failure below. */ }
+    }
     try {
-      if (!vault) throw new ClientError('This browser cannot save the credential securely.');
-      const saved = await vault.save(key);
-      if (generation === connectionGeneration && saved) notice('Connected. This browser restores automatically.', 'success');
+      if (!vault) throw new ClientError('Browser persistent ZIP storage is unavailable.');
+      // For new credentials the stored Base64 must encode exactly the ZIP
+      // generated for the automatic download, not a second random archive.
+      const saved = await vault.save(key,archive);
+      if (generation === connectionGeneration && saved) notice('Connected. The recovery ZIP was saved in browser localStorage.', 'success');
     } catch (err) {
       if (generation === connectionGeneration) notice('Connected for this tab only. ' + (err instanceof ClientError ? err.message : 'The recovery ZIP could not be saved.'), 'error');
     }
-    if (downloadRecovery && generation === connectionGeneration && session.connected) requestRecoveryDownload();
-  } finally { if (generation === connectionGeneration) { connectionBusy = false; sync(); } }
+    if (downloadRecovery && generation === connectionGeneration && session.connected) requestRecoveryDownload(archive);
+  } finally {
+    if (archive) archive.fill(0);
+    if (generation === connectionGeneration) { connectionBusy = false; sync(); }
+  }
 }
 action('connect-form', 'connect-button', async () => {
   if (connectionBusy || session.busy) return;
@@ -1123,10 +1001,10 @@ function resetRecoveryDownload() {
 }
 // Only explicit Connect with a new key and the download button export;
 // restore and CLI calls do not. Filesystem conflicts are left to the browser.
-function requestRecoveryDownload() {
-  let archive, link;
+function requestRecoveryDownload(generatedArchive = null) {
+  let archive = generatedArchive, link, ownsArchive = false;
   try {
-    archive = session.recoveryArchive(crypto);
+    if (!archive) { archive = session.recoveryArchive(crypto); ownsArchive = true; }
     revokeRecoveryDownload();
     recoveryDownloadUrl = URL.createObjectURL(new Blob([archive],{type:'application/zip'}));
     link = document.createElement('a'); link.href = recoveryDownloadUrl; link.type = 'application/zip';
@@ -1138,7 +1016,7 @@ function requestRecoveryDownload() {
     revokeRecoveryDownload();
     $('recovery-download').textContent = 'Retry recovery ZIP download';
     $('recovery-status').textContent = 'The recovery ZIP download could not be requested. Your connection is still available. Use Retry recovery ZIP download and check this browser’s download support.';
-  } finally { if (link) link.remove(); if (archive) archive.fill(0); }
+  } finally { if (link) link.remove(); if (ownsArchive && archive) archive.fill(0); }
 }
 $('recovery-download').addEventListener('click', () => {
   if (connectionBusy || session.busy || !session.connected) return;
@@ -1206,7 +1084,7 @@ $('disconnect').addEventListener('click', async () => {
   resetRecoveryDownload(); $('recovery-file').value = '';
   $('api-key').value = ''; next = null; $('next-page').disabled = true; $('results').replaceChildren(node('p', 'Disconnected.')); setRaw(undefined); $('verification-code').value = ''; $('challenge').textContent = 'No publishing challenge has been returned.';
   notice('Disconnected. Removing the saved credential…'); sync();
-  try { if (vault) await vault.forget(); if (generation === connectionGeneration) notice('Disconnected. The saved recovery ZIP, legacy cookie, session copy, encrypted backup and encryption key have been removed.'); }
+  try { if (vault) await vault.forget(); if (generation === connectionGeneration) notice('Disconnected. The saved Base64 recovery ZIP has been removed from this browser.'); }
   catch (err) { if (generation === connectionGeneration) notice('Disconnected. ' + (err instanceof ClientError ? err.message : 'Clear this site’s cookies and storage to remove any saved credential.'), 'error'); }
   finally { if (generation === connectionGeneration) { connectionBusy = false; sync(); } }
 });
@@ -1266,7 +1144,7 @@ async function restoreConnection() {
   try {
     const key = await vault.restore();
     if (generation !== connectionGeneration) return;
-    if (key) { session.connect(key); notice('Reconnected using this browser’s saved recovery credential.', 'success'); }
+    if (key) { session.connect(key); notice('Reconnected from the persistent Base64 ZIP in browser localStorage.', 'success'); }
     else notice('Connect this browser to use the API.');
   } catch (err) {
     if (generation === connectionGeneration) notice(err instanceof ClientError ? err.message : 'Connect this browser again.', 'error');
