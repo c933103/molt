@@ -183,7 +183,7 @@ function browserFixture() {
   };
   const idb = {open() { const req = {}; setImmediate(() => { req.result = db; req.onsuccess?.(); }); return req; }};
   const opts = {document:doc, indexedDB:idb, crypto:webcrypto, location:{href:'https://c933103.github.io/molt/'}, sessionStorage, localStorage, now:() => clock};
-  return {opts, keys, writes, doc, sessionValues, localValues, setCookie:v => { cookie = v; }, advance:ms => { clock += ms; }};
+  return {opts, keys, writes, doc, sessionValues, localValues, localStorage, setCookie:v => { cookie = v; }, advance:ms => { clock += ms; }};
 }
 
 // Preserve coverage for previously deployed AES/cookie records. New connections
@@ -256,7 +256,7 @@ test('legacy AES record migrates when the wrapping key survives', async () => {
 });
 test('legacy saved cookie and browser backup are encrypted; the wrapping key cannot be exported', async () => {
   const {Vault} = setup(); const f = browserFixture(); const vault = new Vault(f.opts);
-  assert.equal(await saveLegacy(f,KEY), true);
+  await saveLegacy(f,KEY);
   assert.equal(f.writes.some(w => w.includes(KEY)), false);
   assert.match(f.doc.cookie, /^__Secure-moltbook-desk-v1=v2\.[A-Za-z0-9_-]+$/);
   assert.match(f.writes[0], /Path=\/molt\/; Max-Age=34560000; Secure; SameSite=Strict$/);
@@ -368,7 +368,7 @@ test('blocked session storage does not prevent ZIP persistence and restore', asy
   const {Vault} = setup(); const f = browserFixture();
   const denied = {getItem() { throw new Error('Denied'); },setItem() { throw new Error('Denied'); },removeItem() { throw new Error('Denied'); }};
   const vault = new Vault({...f.opts,sessionStorage:denied});
-  assert.equal(await saveLegacy(f,KEY),true); assert.equal(await vault.restore(),KEY);
+  assert.equal(await vault.save(KEY),true); assert.equal(await vault.restore(),KEY);
   assert.equal(f.sessionValues.size,0); assert.equal(f.writes.some(w => w.includes(KEY)),false);
   await assert.rejects(vault.forget(),/remove all saved copies/);
   assert.equal(f.doc.cookie,''); assert.equal(f.keys.size,0);
@@ -463,7 +463,7 @@ async function rejectsRestoreWithoutChangingCopies(Vault,f,pattern) {
 
 test('unreadable session storage is not treated as absent when no other token can be read', async t => {
   for (const missing of [false,true]) await t.test(missing ? 'unavailable session API' : 'denied session read',async () => {
-    const {Vault} = setup(); const f = browserFixture(); await new Vault(f.opts).save(KEY);
+    const {Vault} = setup(); const f = browserFixture(); await saveLegacy(f,KEY);
     f.keys.delete('https://c933103.github.io/molt/|ciphertext'); f.setCookie('');
     f.opts.sessionStorage = missing ? null : {
       getItem() { throw new Error(KEY); },
@@ -475,7 +475,7 @@ test('unreadable session storage is not treated as absent when no other token ca
 });
 
 test('unreadable session storage still allows the existing cookie fallback', async () => {
-  const {Vault} = setup(); const f = browserFixture(); await new Vault(f.opts).save(KEY);
+  const {Vault} = setup(); const f = browserFixture(); await saveLegacy(f,KEY);
   f.keys.delete('https://c933103.github.io/molt/|ciphertext');
   const cookie = f.doc.cookie, writes = [...f.writes], session = [...f.sessionValues];
   f.opts.sessionStorage = {getItem() { throw new Error(KEY); },setItem() { throw new Error(KEY); }};
@@ -484,7 +484,7 @@ test('unreadable session storage still allows the existing cookie fallback', asy
 });
 
 test('conflicting cookies receive cleanup guidance without disclosing or removing copies', async () => {
-  const {Vault} = setup(); const f = browserFixture(); await new Vault(f.opts).save(KEY);
+  const {Vault} = setup(); const f = browserFixture(); await saveLegacy(f,KEY);
   const cookie = f.doc.cookie;
   f.keys.delete('https://c933103.github.io/molt/|ciphertext'); f.sessionValues.clear();
   f.setCookie(cookie + '; ' + cookie);
@@ -496,7 +496,7 @@ test('conflicting cookies receive cleanup guidance without disclosing or removin
 });
 
 test('conflicting cookies do not override an existing backup or session token', async () => {
-  const {Vault} = setup(); const f = browserFixture(); await new Vault(f.opts).save(KEY);
+  const {Vault} = setup(); const f = browserFixture(); await saveLegacy(f,KEY);
   const cookie = f.doc.cookie; f.setCookie(cookie + '; ' + cookie);
   assert.equal(await new Vault(f.opts).restore(),KEY);
   f.keys.delete('https://c933103.github.io/molt/|ciphertext');
@@ -507,7 +507,7 @@ test('conflicting cookies do not override an existing backup or session token', 
 test('restore distinguishes missing and invalid wrapping keys while retaining every copy', async t => {
   const scope = 'https://c933103.github.io/molt/';
   for (const invalid of [false,true]) await t.test(invalid ? 'invalid key' : 'missing key',async () => {
-    const {Vault} = setup(); const f = browserFixture(); await new Vault(f.opts).save(KEY);
+    const {Vault} = setup(); const f = browserFixture(); await saveLegacy(f,KEY);
     if (invalid) f.keys.set(scope,{extractable:true}); else f.keys.delete(scope);
     await rejectsRestoreWithoutChangingCopies(Vault,f,invalid ? /encryption key is invalid/ : /encryption key is missing/);
   });
@@ -518,7 +518,7 @@ test('restore distinguishes malformed records, decryption failures and invalid Z
   for (const stage of ['record','decryption','contents']) await t.test(stage,async () => {
     let calls = 0;
     const {Vault} = setup(() => { calls++; throw new Error('Unexpected network request'); });
-    const f = browserFixture(); await new Vault(f.opts).save(KEY);
+    const f = browserFixture(); await saveLegacy(f,KEY);
     if (stage === 'record') f.keys.set(scope + '|ciphertext','invalid-envelope-' + KEY);
     if (stage === 'decryption') {
       f.opts.crypto = {subtle:{decrypt() { throw new Error(KEY + f.keys.get(scope + '|ciphertext')); }}};
@@ -549,7 +549,8 @@ test('legacy migration failure is reported without renewing or removing the save
 });
 
 test('a transient storage failure can be retried with the existing saved copies', async () => {
-  const {Vault} = setup(); const f = browserFixture(); await new Vault(f.opts).save(KEY);
+  const {Vault} = setup(); const f = browserFixture(); await saveLegacy(f,KEY);
+  f.opts.localStorage=f.localStorage; // Missing new ZIP falls through to legacy IndexedDB.
   const working = f.opts.indexedDB; let blocked = true;
   f.opts.indexedDB = {open(...args) { if (blocked) throw new Error(KEY); return working.open(...args); }};
   const vault = new Vault(f.opts);
@@ -560,7 +561,8 @@ test('a transient storage failure can be retried with the existing saved copies'
 });
 
 test('disconnect still cancels a pending restore instead of surfacing a stale diagnostic', async () => {
-  const {Vault} = setup(); const f = browserFixture(); await new Vault(f.opts).save(KEY);
+  const {Vault} = setup(); const f = browserFixture(); await saveLegacy(f,KEY);
+  f.opts.localStorage=f.localStorage; // No portable ZIP; exercise the async legacy read.
   const working = f.opts.indexedDB; let failedOpen, pendingOpen = true;
   f.opts.indexedDB = {open(...args) {
     if (!pendingOpen) return working.open(...args);
