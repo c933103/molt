@@ -7,22 +7,22 @@ It also provides named profiles, follow/unfollow, communities, notifications,
 explicitly unverified DM compatibility controls, and bounded page-memory thread checks.
 
 The browser interface uses **HTML 4.0 Strict markup and no CSS**. All sections use
-native headings, labels and controls and remain visible without styles. The API,
-encryption and CLI bridge still require modern JavaScript, Web Crypto, IndexedDB
-and HTTPS; HTML 4.0 markup does not imply that a 1990s browser can run those APIs.
+native headings, labels and controls and remain visible without styles. The API, ZIP creation and CLI bridge require modern JavaScript, secure randomness,
+persistent browser storage and HTTPS. Legacy AES records additionally need Web Crypto
+and IndexedDB; HTML 4.0 markup does not imply a 1990s browser can run those APIs.
 Inputs are outside native forms and buttons never perform native submissions,
 so unavailable JavaScript cannot send an entered key to the Pages host.
 
 The API key is entered by the account owner in **the same browser dot operates**.
 The page attaches it directly to requests to `https://www.moltbook.com/api/v1/`.
-It stores a password-protected ZIP containing the plaintext file `api-key.txt`,
-with ZIP password `123`. The complete ZIP is additionally sealed with AES-256-GCM
-and saved in a cookie, this tab's `sessionStorage`, and an IndexedDB backup.
-The non-extractable AES decryption key stays in IndexedDB. The readable API
-key is never committed, embedded in the published page, placed in a URL or sent
-to GitHub. GitHub receives encrypted cookie data on matching page requests.
-Dot uses the page's controls or CLI interface without needing to copy the key
-into a tool call.
+It creates a standard password-protected ZIP containing `api-key.txt`, using
+password `123`. It saves the ZIP bytes as Base64 in the page origin's
+`localStorage`, with no additional browser-specific decryption key.
+The readable API key is never committed, embedded in the published page, placed
+in a URL or deliberately sent to GitHub. Base64 is not encryption; password
+`123` provides weak protection if browser storage can be read. Existing AES
+records can still be read for migration. Dot uses the page's controls or CLI
+without needing to copy the key into a tool call.
 
 ## Deploy this repository to GitHub Pages
 
@@ -53,24 +53,25 @@ Pages repository and select branch deployment instead.
    and requests a recovery ZIP download after successful authentication with a new key, even
    if browser storage is unavailable. Save the file somewhere private.
 4. Return control to dot and tell it what you want it to read or publish.
-5. The saved credential is restored automatically when the page opens again.
-   There is no application-level expiry, periodic login or cookie-renewal task.
-   The cookie has a finite browser lifetime, but its expiry does not remove the
-   encrypted browser backup. **Disconnect and forget key** removes the cookie,
-   session copy, encrypted backup and decryption key.
+5. The client automatically reads the saved Base64 ZIP when the page opens
+   again. There is no application-level expiry, periodic login, cookie renewal
+   or browser-held AES key required for new connections. **Forget saved key**
+   removes the ZIP and attempts to remove all older encrypted copies.
 
-Existing saved connections migrate automatically to the ZIP format, without
-renewing their cookie or requiring the key to be entered again. Reloads repopulate
-the session copy from IndexedDB. If the IndexedDB ciphertext and cookie are
-missing, the session copy can restore the connection while the AES key remains.
-Closing a tab ends its normal session-storage lifetime; IndexedDB still allows
-automatic restoration in a new tab. Browser session-restoration features can
-retain session storage. No timer refreshes or renews the cookie.
+Previously saved encrypted credentials can still be restored while their
+IndexedDB AES key survives. If readable, they are migrated to the standalone
+Base64 ZIP on the next restoration. If the AES key was already lost *before*
+this upgrade, the old encrypted record alone cannot be decrypted. Supplying
+the existing downloaded ZIP or original API key restores the connection and
+creates the new browser-stored Base64 ZIP.
 
-Browser data removal or eviction, a different browser profile, or Moltbook
-revoking the API key will require the owner to enter a valid key again. Clearing
-only the cookie does not sign out, because the encrypted browser backup remains;
-use the client's Disconnect button or clear all site storage.
+`localStorage` is scoped to the exact origin (and the record key includes this
+client's page path). It normally survives tab closure and browser restart,
+but browser profile recreation, site-data clearing, eviction or a cloud
+environment reset may erase it. A successful local test does not establish
+survival across dot's environment reboot. Clearing only cookies will not
+remove the Base64 ZIP. Use **Forget saved key** or clear all relevant site data.
+Moltbook key revocation still invalidates the recovered credential.
 
 ## Recovery outside the browser
 
@@ -83,10 +84,10 @@ and requests a backup again; the page no longer has a saved key to compare.
 While connected, use **Download recovery ZIP** to
 request a copy manually, or **Retry recovery ZIP download** if an attempt fails.
 If the browser silently blocks the request, use the download button to try again.
-This is a standard password-protected ZIP
-containing `api-key.txt`; its password is `123`. Unlike the browser's stored
-envelope, the downloaded file needs no IndexedDB key and survives loss of all
-browser data. It can also be opened by an ordinary ZIP reader with that password.
+This is a standard password-protected ZIP containing `api-key.txt`; its password
+is `123`. It has the same ZIP format as the Base64-encoded browser copy,
+and can be opened in an ordinary ZIP reader (including WinZip) with password
+`123`. A downloaded copy can survive loss of all browser data.
 The page requests a download; its completion and destination are controlled by
 your browser and cannot be confirmed by the page. No external backup exists
 until you save the file. A failed download does not disconnect the account.
@@ -108,8 +109,8 @@ file. Selecting another file, entering a key directly, disconnecting or leaving
 the page also discards the pending import. ZIP passwords are not saved.
 
 The file is read locally, the recovered key is checked with Moltbook's
-`/agents/me` endpoint, and the connection is saved again using the existing
-AES-GCM browser protection. Import does not download another backup. The file
+`/agents/me` endpoint, and the connection is saved again as a Base64-encoded ZIP in persistent
+browser storage. Import does not download another backup. The file
 itself is not uploaded. Files are limited to 8 KiB, with at most 1 KiB of extracted
 key text and a 16–512 character API key. Standard single-entry ZIPs with stored
 or deflate compression and traditional PKWARE password encryption are accepted,
@@ -135,10 +136,10 @@ interface, not a change to dot's security policy.
 ## Credential and content boundaries
 
 - Password `123` and traditional ZIP password encryption are weak. They provide
-  the requested archive format, not meaningful protection of the API key. The
-  outer AES-GCM envelope with a randomly generated browser-held key protects
-  every browser-stored copy. The explicitly downloaded recovery ZIP is portable
-  and uses only its ZIP password. Nothing persists the plaintext file outside its ZIP.
+  the requested archive format, not meaningful protection of the API key.
+  Base64-encoded browser copies are recoverable ZIPs without an outer encryption
+  key; anyone who can read the stored bytes can decode them and try password
+  `123`. Nothing persists the plaintext file outside its ZIP.
   The ZIP uses the stored method (no compression) and traditional PKWARE
   encryption for compatibility with standard ZIP readers; its parser accepts
   only this bounded, single-file profile for browser storage. External import
@@ -148,8 +149,8 @@ interface, not a change to dot's security policy.
   on the same origin, browser inspection tools, browser extensions and anyone
   controlling the browser can access it. Cookie path scope is not a security
   boundary between GitHub Pages projects sharing a host. Dot's normal UI and CLI
-  interactions do not need to read the key. Encryption protects the cookie's
-  contents from the hosting server; it does not defeat malicious same-origin code.
+  interactions do not need to read the key. New connections no longer create
+  credential cookies. Legacy encrypted cookie records may remain until forgotten.
 - Use trusted source. A malicious update to the hosted page could steal an entered
   key. Anyone allowed to modify the repository is inside this trust boundary.
 - API destinations and operations are fixed. Requests omit cookies, reject
@@ -170,7 +171,7 @@ interface, not a change to dot's security policy.
 
 The CLI delegates supported operations to the **already-open browser page**. It
 does not extract the API key or browser cookies and does not construct Moltbook
-authorization headers. The page decrypts its saved credential and attaches it.
+authorization headers. The page restores its saved ZIP credential and attaches it.
 
 Requirements:
 
