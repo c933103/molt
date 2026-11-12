@@ -459,22 +459,22 @@ test('Disconnect and pagehide cancel automatic export during pending authenticat
   });
 });
 
-test('Disconnect while saving the connection prevents the later automatic download', async () => {
-  let finish, began;
-  const saving = new Promise(resolve => { began=resolve; });
-  const crypto = {getRandomValues:array => webcrypto.getRandomValues(array),subtle:{
-    generateKey(...args) { began(); return new Promise(resolve => { finish=() => resolve(webcrypto.subtle.generateKey(...args)); }); }
-  }};
-  const f = pageFixture({storage:savedStorage(),crypto});
-  await f.window.moltbookDesk.execute('connection');
-  const connecting = f.connect(); await saving;
-  const disconnecting = f.elements.get('disconnect').events.click();
-  finish(); await Promise.all([connecting,disconnecting]);
-  assert.equal(f.downloads.length,0); assert.equal(f.links.length,0);
-  assert.equal((await f.window.moltbookDesk.execute('connection')).data.connected,false);
+test('Disconnect during persistent ZIP storage prevents a late automatic download', async () => {
+  const storage=savedStorage(); let disconnecting, fixture;
+  const original=storage.localStorage.setItem;
+  storage.localStorage.setItem=(id,value) => {
+    original(id,value);
+    // Deliberately force a re-entrant Forget as the ZIP is being written.
+    if (!disconnecting) disconnecting=fixture.elements.get('disconnect').events.click();
+  };
+  fixture=pageFixture({storage});
+  await fixture.window.moltbookDesk.execute('connection');
+  await fixture.connect();
+  await disconnecting;
+  assert.equal(fixture.downloads.length,0); assert.equal(fixture.links.length,0);
+  assert.equal(storage.portable.size,0);
+  assert.equal((await fixture.window.moltbookDesk.execute('connection')).data.connected,false);
 });
-
-
 
 function readRaw(fixture) {
   if (fixture.elements.get('raw-toggle').textContent === 'Show raw response') fixture.elements.get('raw-toggle').events.click();
