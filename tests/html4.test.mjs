@@ -55,7 +55,7 @@ test('startup displays sanitized storage and crypto diagnostics without connecti
     assert.equal(result.data.connected,false); assert.equal(requests,0);
     assert.equal(elements.get('connection').textContent,'Not connected');
     const message = elements.get('status').textContent;
-    assert.match(message,capability === 'crypto' ? /Web Crypto is unavailable/ : /Browser credential storage is unavailable/);
+    assert.match(message,capability === 'crypto' ? /Web Crypto is unavailable/ : /Browser persistent ZIP storage is unavailable/);
     assert.match(message,/Saved connection status could not be checked/);
     assert.match(message,/saved copies were not removed/i);
     assert.equal(message.includes(marker),false);
@@ -92,7 +92,7 @@ function pageFixture(options = {}) {
     static revokeObjectURL(url) { revoked.push(url); }
   }
   const context = {document,window,URL:BrowserURL,URLSearchParams,AbortController,TextDecoder,TextEncoder,Uint8Array,Blob,DecompressionStream,ReadableStream,crypto:options.crypto || webcrypto,btoa,atob,setTimeout,clearTimeout,
-    ...(options.storage ? {indexedDB:options.storage.indexedDB,sessionStorage:options.storage.sessionStorage,location:{href:'https://c933103.github.io/molt/'}} : {})};
+    ...(options.storage ? {indexedDB:options.storage.indexedDB,sessionStorage:options.storage.sessionStorage,localStorage:options.storage.localStorage,location:{href:'https://c933103.github.io/molt/'}} : {})};
   const fixtureOptions = options;
   context.fetch = async (url,options) => {
     calls.push({url,options});
@@ -258,9 +258,9 @@ test('text keys beginning with PK are still treated as backup text, regardless o
   assert.equal(f.calls.length,1); assert.equal(f.calls[0].options.headers.Authorization,'Bearer '+key);
 });
 
-// Synthetic storage shared across page instances; real Web Crypto still seals the ZIP.
+// Synthetic persistent ZIP and legacy storage shared across page instances.
 function savedStorage() {
-  const records = new Map(), tab = new Map(); let cookie = '';
+  const records = new Map(), tab = new Map(), portable = new Map(); let cookie = '';
   const db = {
     objectStoreNames:{contains:() => true}, close() {},
     transaction() {
@@ -283,10 +283,39 @@ function savedStorage() {
   return {
     document:{get cookie() { return cookie; },set cookie(value) { cookie = value.includes('Max-Age=0;') ? '' : value.split(';')[0]; }},
     indexedDB:{open() { const req = {}; setImmediate(() => { req.result = db; req.onsuccess?.(); }); return req; }},
-    sessionStorage:{getItem:id => tab.get(id) ?? null,setItem:(id,value) => tab.set(id,value),removeItem:id => tab.delete(id)}
+    sessionStorage:{getItem:id => tab.get(id) ?? null,setItem:(id,value) => tab.set(id,value),removeItem:id => tab.delete(id)},
+    localStorage:{getItem:id => portable.get(id) ?? null,setItem:(id,value) => portable.set(id,String(value)),removeItem:id => portable.delete(id)},
+    portable
   };
 }
 
+
+test('browser restores from the portable ZIP when its AES storage is gone', async () => {
+  const storage=savedStorage();
+  const f=pageFixture({storage});
+  await f.window.moltbookDesk.execute('connection');
+  await f.connect();
+  assert.equal(f.calls.length,1);
+  assert.equal(storage.portable.size,1);
+  // A subsequent environment has no usable IndexedDB or AES API.
+  storage.indexedDB={open() { throw new Error('No IndexedDB'); }};
+  const resumed=pageFixture({storage,crypto:{}});
+  assert.equal((await resumed.window.moltbookDesk.execute('connection')).data.connected,true);
+  assert.equal(resumed.calls.length,0);
+  assert.equal(resumed.downloads.length,0);
+  assert.match(resumed.elements.get('status').textContent,/Reconnected using this browser/);
+  await resumed.elements.get('disconnect').events.click();
+  assert.equal(storage.portable.size,0);
+});
+test('browser with cleared persistent storage cannot pretend an environment reboot kept the ZIP', async () => {
+  const storage=savedStorage(), first=pageFixture({storage});
+  await first.window.moltbookDesk.execute('connection'); await first.connect();
+  storage.portable.clear();
+  const second=pageFixture({storage});
+  const result=await second.window.moltbookDesk.execute('connection');
+  assert.equal(result.data.connected,false);
+  assert.equal(second.calls.length,0);
+});
 test('new-key Connect downloads once; current-key Connect and browser restoration never download', async () => {
   const storage = savedStorage(), first = pageFixture({storage});
   await first.window.moltbookDesk.execute('connection');
@@ -360,6 +389,8 @@ test('Disconnect cancels Connect while it checks the previously saved key', asyn
   await f.window.moltbookDesk.execute('connection');
   await f.connect(); await f.connect(rejected);
   const requestsBefore = f.calls.length, downloadsBefore = f.links.length;
+  // Force the legacy async-read path to exercise the disconnect race.
+  storage.portable.clear();
   const open = storage.indexedDB.open;
   let resume, began;
   const reading = new Promise(resolve => { began=resolve; });
