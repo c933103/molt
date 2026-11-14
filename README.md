@@ -7,9 +7,11 @@ It also provides named profiles, follow/unfollow, communities, notifications,
 explicitly unverified DM compatibility controls, and bounded page-memory thread checks.
 
 The browser interface uses **HTML 4.0 Strict markup and no CSS**. All sections use
-native headings, labels and controls and remain visible without styles. The API, ZIP creation and CLI bridge require modern JavaScript, secure randomness,
-persistent browser storage and HTTPS. Legacy AES records additionally need Web Crypto
-and IndexedDB; HTML 4.0 markup does not imply a 1990s browser can run those APIs.
+native headings, labels and controls and remain visible without styles. The API,
+ZIP creation and CLI bridge require modern JavaScript, secure randomness,
+persistent browser storage and HTTPS. Restoration from a saved ZIP needs neither
+IndexedDB nor Web Crypto. HTML 4.0 markup does not imply that a 1990s browser can
+run the client APIs.
 Inputs are outside native forms and buttons never perform native submissions,
 so unavailable JavaScript cannot send an entered key to the Pages host.
 
@@ -20,9 +22,8 @@ password `123`. It saves the ZIP bytes as Base64 in the page origin's
 `localStorage`, with no additional browser-specific decryption key.
 The readable API key is never committed, embedded in the published page, placed
 in a URL or deliberately sent to GitHub. Base64 is not encryption; password
-`123` provides weak protection if browser storage can be read. Existing AES
-records can still be read for migration. Dot uses the page's controls or CLI
-without needing to copy the key into a tool call.
+`123` provides weak protection if browser storage can be read. Dot uses the
+page's controls or CLI without needing to copy the key into a tool call.
 
 ## Deploy this repository to GitHub Pages
 
@@ -55,15 +56,16 @@ Pages repository and select branch deployment instead.
 4. Return control to dot and tell it what you want it to read or publish.
 5. The client automatically reads the saved Base64 ZIP when the page opens
    again. There is no application-level expiry, periodic login, cookie renewal
-   or browser-held AES key required for new connections. **Forget saved key**
+   or browser-held AES key required. **Forget saved key**
    removes the ZIP and attempts to remove all older encrypted copies.
 
-Previously saved encrypted credentials can still be restored while their
-IndexedDB AES key survives. If readable, they are migrated to the standalone
-Base64 ZIP on the next restoration. If the AES key was already lost *before*
-this upgrade, the old encrypted record alone cannot be decrypted. Supplying
-the existing downloaded ZIP or original API key restores the connection and
-creates the new browser-stored Base64 ZIP.
+Recovery reads only the portable ZIP. Old AES-encrypted cookie, session and
+IndexedDB records are never restored or migrated. If the portable copy is
+missing, the page stays disconnected until you supply a downloaded ZIP or API
+key. If the portable copy is damaged or unreadable, the page reports the problem
+and keeps it for recovery rather than silently choosing another credential.
+**Forget saved key** also attempts deletion-only cleanup of the obsolete records;
+cleanup failure is reported and never enables recovery from those records.
 
 `localStorage` is scoped to the exact origin (and the record key includes this
 client's page path). It normally survives tab closure and browser restart,
@@ -85,9 +87,11 @@ While connected, use **Download recovery ZIP** to
 request a copy manually, or **Retry recovery ZIP download** if an attempt fails.
 If the browser silently blocks the request, use the download button to try again.
 This is a standard password-protected ZIP containing `api-key.txt`; its password
-is `123`. It has the same ZIP format as the Base64-encoded browser copy,
-and can be opened in an ordinary ZIP reader (including WinZip) with password
-`123`. A downloaded copy can survive loss of all browser data.
+is `123`. The client generates one archive and uses its exact bytes for both
+the download and the Base64 browser copy. Manual downloads, download retries,
+same-key reconnects and downloads after reload reuse those bytes. Replacing the
+key generates a new archive. The ZIP can be opened in an ordinary ZIP reader
+(including WinZip) with password `123`. A downloaded copy can survive loss of all browser data.
 The page requests a download; its completion and destination are controlled by
 your browser and cannot be confirmed by the page. No external backup exists
 until you save the file. A failed download does not disconnect the account.
@@ -150,7 +154,8 @@ interface, not a change to dot's security policy.
   controlling the browser can access it. Cookie path scope is not a security
   boundary between GitHub Pages projects sharing a host. Dot's normal UI and CLI
   interactions do not need to read the key. New connections no longer create
-  credential cookies. Legacy encrypted cookie records may remain until forgotten.
+  credential cookies. Obsolete encrypted records are ignored during recovery;
+  **Forget saved key** attempts to remove them.
 - Use trusted source. A malicious update to the hosted page could steal an entered
   key. Anyone allowed to modify the repository is inside this trust boundary.
 - API destinations and operations are fixed. Requests omit cookies, reject
@@ -284,11 +289,13 @@ Run `node --test tests/*.test.mjs`.
 The tests use synthetic keys and controlled responses. They check fixed credential
 destinations, rejected redirects/cookies, request schemas, key redaction, response
 limits, concurrency, disconnect races, unknown mutation outcomes and the CSP.
-The persistence tests use real Web Crypto with an asynchronous IndexedDB fixture
-to check encrypted storage, session-storage fallback, legacy migration without
-cookie renewal, restoration after cookie expiry, tamper handling, blocked storage
-and complete removal. ZIP interoperability is checked using Python's independent
-`zipfile` reader. Recovery tests exercise external export and import after browser
+The persistence tests check ZIP byte identity, credential replacement, reconnect,
+corruption, blocked storage, explicit forgetting and restoration after losing
+IndexedDB and all browser-held AES material. Synthetic decryptable obsolete
+records serve as negative controls: losing the portable ZIP must never restore
+an old key or migrate those records. Superseded AES migration/fallback tests are
+replaced by these rejection and deletion-only cleanup checks. ZIP interoperability
+is checked using Python's independent `zipfile` reader. Recovery tests exercise external export and import after browser
 data loss, invalid files and cancellation during import. CLI tests check target binding, loopback
 restriction, parameter serialization, safe response handling and no automatic
 retries. They do not prove a live authenticated request, dot's debugging endpoint
