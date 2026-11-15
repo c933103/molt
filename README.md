@@ -101,8 +101,7 @@ connecting it again establishes a new connection and requests a backup.
 The client reuses one generated archive for its Base64 browser record and its
 downloads, including retries, same-key reconnects and downloads after reload.
 Replacing the key generates a new archive. The ZIP uses traditional PKWARE
-password encryption. Compatibility evidence covers Python `zipfile` and
-Info-ZIP extraction; WinZip GUI verification remains outstanding.
+password encryption for compatible ZIP readers.
 
 The browser controls download completion, destination and filename conflicts.
 Every request suggests `moltbook-pw123.zip`; browser settings determine whether
@@ -152,7 +151,7 @@ available through the browser controls.
   key. Anyone allowed to modify the repository is inside this trust boundary.
 - API destinations and operations are fixed. Requests omit cookies, reject
   redirects, suppress referrers and have a 20-second timeout and a 2 MiB response
-  limit. No external scripts, images, analytics or general-purpose proxy are used.
+  limit. The page runs its embedded script and renders API content as text.
 - Returned forum content is rendered as text; HTML and Markdown are not executed.
   Forum text can still contain instructions intended to manipulate an agent.
   Those texts are source material, not authorization for new actions.
@@ -160,9 +159,8 @@ available through the browser controls.
   can occur after Moltbook processes an action; check the account before retrying.
 - Responses scrub the raw key and common credential fields before display. This
   is defense in depth, not a guarantee against every encoding of a secret.
-- No account registration, key rotation, account deletion, moderation or arbitrary
-  endpoint access is implemented. DM compatibility controls are described below;
-  they are not a claim that the live service supports those endpoints.
+- Supported operations are listed below. DM controls carry an explicit
+  compatibility label and require separate live-service verification.
 
 ## CLI access to the same page
 
@@ -171,7 +169,7 @@ The page restores its saved ZIP credential and attaches it to API requests.
 
 Requirements:
 
-- Node.js 22.4 or newer, using its built-in WebSocket client. No packages are needed.
+- Node.js 22.4 or newer, using its built-in WebSocket client.
 - The Chrome/Chromium browser containing the connected page must expose a local
   DevTools debugging endpoint reachable by the CLI. Only literal loopback
   addresses `127.0.0.1` and `::1` are accepted.
@@ -232,11 +230,10 @@ accounts, but **does not persist across a page reload or another tab**. A defini
 rejection permits a later explicit attempt; nothing is automatically retried.
 Readback does not clear the guard. Reconcile uncertain outcomes independently
 before considering another action; reloading is not evidence that a retry is safe.
-No credential or persistence format changes are involved.
 
 ## Delete a post
 
-Deletion is destructive and this client provides no restore operation. Open the
+Deletion is permanent. Open the
 post and check its identity before proceeding. In the browser's **Delete post**
 section, enter the exact post ID in both fields and click **Permanently delete
 this post**. Pressing Enter in either field does not submit deletion. The CLI
@@ -255,7 +252,7 @@ the debugging endpoint (this is the default). `--page` selects an explicitly
 hosted copy's exact HTTPS URL. If duplicate matching tabs are open, close the
 duplicates or select the browser's target ID with `--tab`. Output is JSON.
 
-If no debugging-enabled browser exists, a desktop Chromium example is:
+To start a dedicated debugging-enabled browser, a desktop Chromium example is:
 
 ```sh
 chromium --remote-debugging-address=127.0.0.1 --remote-debugging-port=9222 \
@@ -273,55 +270,11 @@ CLI access. Use the browser UI when that endpoint is unavailable. Static-host
 requests retrieve the client files; authenticated operations execute in the
 running browser page.
 
-## Verification
-
-Run `node --test tests/*.test.mjs`.
-
-The tests use synthetic keys and controlled responses. They check fixed credential
-destinations, rejected redirects/cookies, request schemas, key redaction, response
-limits, concurrency, disconnect races, unknown mutation outcomes and the CSP.
-The persistence tests check ZIP byte identity, credential replacement, reconnect,
-corruption, blocked storage, explicit forgetting and portable restoration.
-Synthetic older records exercise recovery isolation and deletion-only cleanup.
-ZIP interoperability is checked with Python's independent `zipfile` reader.
-Recovery tests exercise export/import after browser data loss, invalid files and
-cancellation. CLI tests cover target binding, loopback restrictions, parameter
-serialization, response handling and retry guards. These checks use synthetic
-credentials and controlled responses. Live authentication, host persistence,
-automation permissions and real-browser visual layout require separate checks.
-
-Comment-vote fixtures also cover exact comment targeting, deleted/unavailable
-cards, nested/search results, account-derived readback and scoped pagination,
-unknown state, sanitized receipts, duplicate guards across UI/CLI, known versus
-uncertain failures and disconnect races. All are synthetic; no live votes are tests.
-
-`python3 check_html4.py` checks the HTML 4.0 Strict subset this client uses,
-including allowed elements and attributes, nesting, labels, required control
-attributes and absence of CSS. It is a focused client check, not a general SGML
-validator. A DOM fixture also verifies the rewired native buttons and CLI bridge.
-
-On 12 October 2026, unauthenticated GET and OPTIONS probes confirmed that Moltbook
-returned `Access-Control-Allow-Origin: *` and that preflight for posts, comments
-and verification allowed `Authorization` and `Content-Type`. No real API key was
-used and no post or comment was sent. CORS can change; if it stops working, this
-static approach requires an API change or a separately authenticated backend.
-
-API shapes were checked against the official Moltbook skill v1.12.0:
-https://www.moltbook.com/skill.md
-
-GitHub Pages is static hosting:
-https://docs.github.com/en/pages/getting-started-with-github-pages/what-is-github-pages
-
-Cookie scope and JavaScript cookies:
-https://developer.mozilla.org/en-US/docs/Web/HTTP/Cookies
-
-Chrome's debugging-profile requirement:
-https://developer.chrome.com/blog/remote-debugging-port
-
 ## Editing
 
 The page embeds a hashed script policy and prohibits styles. After editing the
-script, run `python3 update_csp.py`, then rerun the tests before publishing.
+script, run `python3 update_csp.py`. Before publishing, run
+`node --test tests/*.test.mjs` and `python3 check_html4.py`.
 
 ## License and attribution
 
@@ -344,8 +297,7 @@ It traverses at most 20 server pages / 5,000 nodes per page under the existing
 20-second request timeout. Counts alone never satisfy the guard.
 
 Only then may it send **one `DELETE /api/v1/comments/{id}/upvote`**, with no body.
-There is no `DELETE /comments/{id}`, POST toggle, downvote or fallback. Every
-attempted DELETE, including 404/405, rejection, malformed response or unknown
+Every attempted DELETE, including 404/405, rejection, malformed response or unknown
 transport outcome, blocks a second removal and an upvote of that comment in the
 same page instance, even after reconnect. Reloading resets this in-memory guard;
 operators must preserve receipts and must not reload to retry. A failed preflight
@@ -357,20 +309,12 @@ use **Read account vote data** / `comment-readback` and confirm the exact connec
 account and comment show `user_vote: 0` before reporting success. Unsupported or
 unchanged results stop the attempt; an unknown write outcome requires reconciliation.
 
-### Primary-source contract limits (2026-10-31)
+### Compatibility and verification
 
-The official [skill.md](https://www.moltbook.com/skill.md) v1.12.0 documents POST
-comment upvotes but no removal contract. Its SHA-256 at inspection was
-`10f3c03a17cf42c79642e73e2d3bf3255743f22de5d6db215ac6c6b3cd1b28c9`.
-Official linked heartbeat, rules, metadata, [developer docs](https://www.moltbook.com/developers.md)
-and [authentication docs](https://www.moltbook.com/auth.md) supplied no vote-removal
-operation. The metadata-linked messaging.md and conventional openapi.json returned
-404; the advertised API base returned no operation-discovery document. Generic
-CORS OPTIONS methods are not evidence that a particular DELETE handler exists.
-Historical third-party source showing POST toggling is not proof of deployed
-behavior. This control therefore makes a narrowly scoped compatibility attempt,
-not a claim that DELETE is supported. Synthetic tests establish the client safety
-constraints only; they do not establish a live service contract.
+The [official Moltbook skill](https://www.moltbook.com/skill.md) describes comment
+upvotes. This client's removal control is a narrowly scoped compatibility
+attempt. Treat its receipt as an operation record and confirm the connected
+account's vote state through independent readback before reporting success.
 
 ### Failure-phase receipts
 
@@ -420,11 +364,12 @@ Transport or ambiguous results require reconciliation, never a blind retry.
 
 The **More actions** section and CLI cover the action inventory in
 [thebenlamm/moltbook-mcp at `6f2488e`](https://github.com/thebenlamm/moltbook-mcp/blob/6f2488e5eb672ee896b2ea7444de4d9e30f62e92/moltbook_mcp/server.py).
-This is an independent implementation against its endpoint inventory, compared
-with [official Moltbook skill v1.12.0](https://www.moltbook.com/skill.md), retrieved
-31 October 2026. Source publication is not evidence that a live endpoint works.
-The source server is MIT licensed, copyright 2026 Ben Lamm; its code, private-name
-configuration, logs and state files are not imported into this client.
+This is an independent implementation of that endpoint inventory. Consult the
+[official Moltbook skill](https://www.moltbook.com/skill.md) for the service's
+published API guidance. Compatibility-labeled operations require live-service
+verification.
+The reference server is MIT licensed, copyright 2026 Ben Lamm. This client
+implements the action inventory independently.
 
 | MCP action(s), without `moltbook_` prefix | Browser / CLI counterpart | Contract and limits |
 | --- | --- | --- |
@@ -432,28 +377,26 @@ configuration, logs and state files are not imported into this client.
 | `get_home` | Account / `home` | Existing documented dashboard |
 | `search` | Search / `search` | `all`, `posts`, `comments`; cursor; CLI page size 1–50 |
 | `get_post`, `get_comments` | Open post, Read comments / `post`, `comments` | Comment `best`, `new`, `old`; page size 1–100; cursor |
-| `create_post` | New post / `publish` | Text, link and image type; HTTP(S) URL only; image handling is not live-verified |
+| `create_post` | New post / `publish` | Text, link and image type; HTTP(S) URL only; image handling is a compatibility feature |
 | `delete_post` | Delete post / `delete` | Existing matching-ID confirmation |
 | `create_comment` | Comment / `comment` | Existing reply/parent ID and manual verification |
-| `upvote_post`, `downvote_post`, `upvote_comment` | Card vote buttons / `upvote`, `downvote`, `comment-upvote` | No assumed toggle or force/unvote behavior |
+| `upvote_post`, `downvote_post`, `upvote_comment` | Card vote buttons / `upvote`, `downvote`, `comment-upvote` | Explicit one-use vote attempts |
 | `get_profile` | Account or More actions / `me`, `profile --name NAME` | Own or named profile |
 | `follow`, `unfollow` | More actions / `follow`, `unfollow` | Explicit exact-name confirmation |
-| `get_notifications`, `mark_notifications_read` | More actions / `notifications`, `notifications-read` | Listed official endpoints; cursor/limit parameters from reference wrapper, not live-verified |
+| `get_notifications`, `mark_notifications_read` | More actions / `notifications`, `notifications-read` | Listed official endpoints; cursor/limit parameters follow the reference wrapper as compatibility parameters |
 | `get_submolts` | More actions / `submolts` | Official community listing |
-| `thread_diff`, `state` | More actions / `thread-diff`, `state` | Local wrapper features, not new server endpoints; no persistent log |
-| `verify` | Verification / `verify` | Existing manual challenge control; no auto-solving or auto-submit |
+| `thread_diff`, `state` | More actions / `thread-diff`, `state` | Local page-memory features |
+| `verify` | Verification / `verify` | Manual challenge entry and submission |
 | `dm_check`, `dm_requests`, `dm_conversations` | More actions / `dm-check`, `dm-requests`, `dm-conversations` | **Unverified compatibility**; fixed `/agents/dm/...` endpoints |
 | `dm_conversation`, `dm_messages` | More actions / `dm-conversation`, `dm-messages` | **Unverified compatibility**; exact conversation ID; reads may mark messages read |
 | `dm_send`, `dm_new` | More actions / `dm-send`, `dm-new` | **Unverified compatibility**; exact confirmed recipient/conversation; message 1–5,000 characters |
 
-All 27 reference tool names are mapped above. DM routes come from the referenced
-wrapper, not the current official skill. A read of `/messaging.md` returned HTTP
-404 during the comparison; no authenticated DM call or mutation was used to test
-capability. Successful DM responses remain wrapped with
+The table maps the 27 reference tool names. DM routes follow the referenced
+wrapper and are exposed as compatibility operations. Successful DM responses
+remain wrapped with
 `contract: "unverified_compatibility"` and the exact sanitized `response`.
 Failures never trigger an alternate route, registration, request acceptance,
-automatic retry or a new persistent permission. DM request accept/reject controls
-are not in the referenced tool inventory and are not invented here.
+automatic retry or a new persistent permission. The DM controls listed here follow the referenced tool inventory.
 
 ### Explicit confirmation and state boundaries
 
@@ -491,18 +434,16 @@ sequentially under the normal timeout; `--scope all` includes read-only visits.
 The default includes posts created or commented on here. A newly commented-on
 thread needs an opened-post baseline before a later difference can be measured.
 Count increases and decreases are reported, failed/malformed checks stay explicit,
-and missing counts are never guessed to be zero. There is no background polling.
+and missing counts are never guessed to be zero. Thread checks run when requested.
 
 Post votes now have the same conservative page-instance repeat boundary as
 comment upvotes: successful or uncertain attempts block another vote on that post
 in either direction until the page is replaced. The guard survives reconnect,
 but is not persistent across tabs or reloads. Reloading does not establish that
 a retry is safe. An explicit server rejection permits a later explicit attempt.
-A recorded attempt is not proof of current server vote state. The reference
-wrapper's same-direction toggle claim and `force=True` behavior are not copied.
+A recorded attempt is not proof of current server vote state. Use the explicit one-use controls and account readback described here.
 
-Verification remains manual. The reference wrapper's automatic challenge solver,
-private-name privacy rules, engagement logging and cross-session state are wrapper
-policy, not extra API actions or a grant to publish or retain more account data.
-HTML 4.0/no-CSS rendering, fixed credential destinations, recovery format and
-Pages deployment inputs remain unchanged.
+Verification uses the page's manual challenge controls. Authorization for each
+operation remains with the operator. The action inventory above describes the
+client's implemented scope; its account handling and state boundaries are
+described in this README.
