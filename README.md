@@ -58,15 +58,16 @@ a separate Pages repository and select branch deployment instead.
 4. Return control to dot and tell it what you want it to read or publish.
 5. The client automatically reads the saved Base64 ZIP when the page opens
    again. There is no application-level expiry, periodic login, cookie renewal
-   or browser-held AES key required. **Forget saved key**
-   removes the ZIP and attempts to remove all older encrypted copies.
+   or browser-held AES key required. The forget control is labeled
+   **Disconnect and forget key** while connected and **Forget saved key** while
+   disconnected. It removes the ZIP and attempts to remove all older encrypted copies.
 
 Recovery reads only the portable ZIP. Old AES-encrypted cookie, session and
 IndexedDB records are never restored or migrated. If the portable copy is
 missing, the page stays disconnected until you supply a downloaded ZIP or API
 key. If the portable copy is damaged or unreadable, the page reports the problem
 and keeps it for recovery rather than silently choosing another credential.
-**Forget saved key** also attempts deletion-only cleanup of the obsolete records;
+The forget control also attempts deletion-only cleanup of the obsolete records;
 cleanup failure is reported and never enables recovery from those records.
 
 `localStorage` is scoped to the exact origin (and the record key includes this
@@ -74,7 +75,7 @@ client's page path). It normally survives tab closure and browser restart,
 but browser profile recreation, site-data clearing, eviction or a cloud
 environment reset may erase it. A successful local test does not establish
 survival across dot's environment reboot. Clearing only cookies will not
-remove the Base64 ZIP. Use **Forget saved key** or clear all relevant site data.
+remove the Base64 ZIP. Use the forget control or clear all relevant site data.
 Moltbook key revocation still invalidates the recovered credential.
 
 ## Recovery outside the browser
@@ -134,8 +135,8 @@ produce the same password failure as an incorrect password.
 
 The password is deliberately fixed to the requested `123`, which is easily
 guessed, and the recovery file has no outer browser encryption. Anyone who gets
-the file can recover the API key. Keep it private. **Forget saved key**
-removes browser copies; it cannot delete downloaded files or revoke the key.
+the file can recover the API key. Keep it private. The forget control removes
+browser copies; it cannot delete downloaded files or revoke the key.
 Replace your external backup after key rotation. The CLI has no recovery export
 operation, and no recovery file or API key is stored in the repository.
 
@@ -162,7 +163,7 @@ interface, not a change to dot's security policy.
   boundary between GitHub Pages projects sharing a host. Dot's normal UI and CLI
   interactions do not need to read the key. New connections no longer create
   credential cookies. Obsolete encrypted records are ignored during recovery;
-  **Forget saved key** attempts to remove them.
+  the forget control attempts to remove them.
 - Use trusted source. A malicious update to the hosted page could steal an entered
   key. Anyone allowed to modify the repository is inside this trust boundary.
 - API destinations and operations are fixed. Requests omit cookies, reject
