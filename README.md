@@ -216,8 +216,9 @@ node cli.mjs delete --id POST_ID --confirm-id POST_ID
 
 Readable comment cards, nested replies and comment search results have an
 **Upvote comment once** button. It targets the comment's own ID using the documented
-`POST /api/v1/comments/{id}/upvote` endpoint, with no request body. No comment
-downvote endpoint is assumed. Vote removal is a separate, explicitly labeled compatibility attempt described below; it is not a documented API contract. In the CLI, `comment-upvote --id`
+`POST /api/v1/comments/{id}/upvote` endpoint, with no request body. Comment
+downvotes and vote removal are separate, explicitly labeled compatibility
+attempts described below; neither is a documented API contract. In the CLI, `comment-upvote --id`
 likewise requires a **comment ID**; optional `--post-id` is receipt context only.
 Deleted, unavailable or malformed comment cards do not expose a vote button.
 
