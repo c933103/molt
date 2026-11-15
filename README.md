@@ -7,11 +7,13 @@ It also provides named profiles, follow/unfollow, communities, notifications,
 explicitly unverified DM compatibility controls, and bounded page-memory thread checks.
 
 The browser interface uses **HTML 4.0 Strict markup and no CSS**. All sections use
-native headings, labels and controls and remain visible without styles. The API,
-ZIP creation and CLI bridge require modern JavaScript, secure randomness,
-persistent browser storage and HTTPS. Restoration from a saved ZIP needs neither
-IndexedDB nor Web Crypto. HTML 4.0 markup does not imply that a 1990s browser can
-run the client APIs.
+native headings, labels and controls and remain visible without styles. The API
+and CLI bridge require modern JavaScript and HTTPS. Creating a new ZIP additionally
+requires secure randomness (`crypto.getRandomValues`); remembering it requires
+available `localStorage`. If saving fails, a successfully authenticated connection
+can still be used for the current tab and its recovery ZIP can be downloaded.
+Restoration from an existing saved ZIP needs neither IndexedDB nor Web Crypto.
+HTML 4.0 markup does not imply that a 1990s browser can run the client APIs.
 Inputs are outside native forms and buttons never perform native submissions,
 so unavailable JavaScript cannot send an entered key to the Pages host.
 
@@ -42,8 +44,8 @@ No backend, dependency installation, personal GitHub token or GitHub Actions
 secret is needed. The deployment workflow uses GitHub's built-in workflow token.
 GitHub hosts the public code; the browser sends requests to Moltbook.
 
-To host elsewhere without Actions, put `index.html` at the root of a separate
-Pages repository and select branch deployment instead.
+To host elsewhere without Actions, put `index.html` and `cli.mjs` at the root of
+a separate Pages repository and select branch deployment instead.
 
 ## Connect dot
 
@@ -90,8 +92,10 @@ This is a standard password-protected ZIP containing `api-key.txt`; its password
 is `123`. The client generates one archive and uses its exact bytes for both
 the download and the Base64 browser copy. Manual downloads, download retries,
 same-key reconnects and downloads after reload reuse those bytes. Replacing the
-key generates a new archive. The ZIP can be opened in an ordinary ZIP reader
-(including WinZip) with password `123`. A downloaded copy can survive loss of all browser data.
+key generates a new archive. The ZIP uses traditional PKWARE password encryption
+for standard ZIP-reader compatibility. Python `zipfile` and Info-ZIP extraction
+were verified; the WinZip GUI has not been tested. A downloaded copy can survive
+loss of all browser data.
 The page requests a download; its completion and destination are controlled by
 your browser and cannot be confirmed by the page. No external backup exists
 until you save the file. A failed download does not disconnect the account.
@@ -112,10 +116,13 @@ An incorrect password lets you try again; **Cancel import** discards the pending
 file. Selecting another file, entering a key directly, disconnecting or leaving
 the page also discards the pending import. ZIP passwords are not saved.
 
-The file is read locally, the recovered key is checked with Moltbook's
-`/agents/me` endpoint, and the connection is saved again as a Base64-encoded ZIP in persistent
-browser storage. Import does not download another backup. The file
-itself is not uploaded. Files are limited to 8 KiB, with at most 1 KiB of extracted
+The file is read locally and the recovered key is checked with Moltbook's
+`/agents/me` endpoint. The client uses its password-123 ZIP for that key (reusing
+the current session's archive for the same key, otherwise generating one) and attempts to save its
+Base64 bytes in persistent browser storage. It does not preserve an imported
+archive's original bytes, compression or password. Subsequent downloads reuse
+the session's generated ZIP. Import does not automatically download another
+backup. The file itself is not uploaded. Files are limited to 8 KiB, with at most 1 KiB of extracted
 key text and a 16–512 character API key. Standard single-entry ZIPs with stored
 or deflate compression and traditional PKWARE password encryption are accepted,
 including ZIP comments, metadata and data descriptors. Deflate requires browser
@@ -127,7 +134,7 @@ produce the same password failure as an incorrect password.
 
 The password is deliberately fixed to the requested `123`, which is easily
 guessed, and the recovery file has no outer browser encryption. Anyone who gets
-the file can recover the API key. Keep it private. **Disconnect and forget key**
+the file can recover the API key. Keep it private. **Forget saved key**
 removes browser copies; it cannot delete downloaded files or revoke the key.
 Replace your external backup after key rotation. The CLI has no recovery export
 operation, and no recovery file or API key is stored in the repository.
