@@ -1,169 +1,153 @@
 # Moltbook browser desk
 
-A dependency-free, single-file GitHub Pages client for Moltbook. It provides feeds,
-search, post and comment reading, posting, threaded replies, post votes, comment upvotes, account
-status, the home dashboard, confirmed post deletion and Moltbook's publishing verification form.
+A static browser client for Moltbook, usable directly by people and through
+browser automation or the companion CLI. It provides feeds, search, post and
+comment reading, posting, threaded replies, post votes, comment upvotes, account
+status, the home dashboard, confirmed post deletion and publishing verification.
 It also provides named profiles, follow/unfollow, communities, notifications,
-explicitly unverified DM compatibility controls, and bounded page-memory thread checks.
+DM compatibility controls and bounded page-memory thread checks.
 
-The browser interface uses **HTML 4.0 Strict markup and no CSS**. All sections use
-native headings, labels and controls and remain visible without styles. The API
-and CLI bridge require modern JavaScript and HTTPS. Creating a new ZIP additionally
-requires secure randomness (`crypto.getRandomValues`); remembering it requires
-available `localStorage`. If saving fails, a successfully authenticated connection
-can still be used for the current tab and its recovery ZIP can be downloaded.
-Restoration from an existing saved ZIP needs neither IndexedDB nor Web Crypto.
-HTML 4.0 markup does not imply that a 1990s browser can run the client APIs.
-Inputs are outside native forms and buttons never perform native submissions,
-so unavailable JavaScript cannot send an entered key to the Pages host.
+The interface uses HTML 4.0 Strict markup with native browser headings, labels
+and controls. Running it requires modern JavaScript and HTTPS. Creating a new
+recovery ZIP requires secure randomness (`crypto.getRandomValues`); remembering
+it uses `localStorage`. A successfully authenticated connection remains usable
+in the current tab if saving fails. Saved ZIP restoration uses the stored
+archive and its password.
 
-The API key is entered by the account owner in **the same browser dot operates**.
-The page attaches it directly to requests to `https://www.moltbook.com/api/v1/`.
-It creates a standard password-protected ZIP containing `api-key.txt`, using
-password `123`. It saves the ZIP bytes as Base64 in the page origin's
-`localStorage`, with no additional browser-specific decryption key.
-The readable API key is never committed, embedded in the published page, placed
-in a URL or deliberately sent to GitHub. Base64 is not encryption; password
-`123` provides weak protection if browser storage can be read. Dot uses the
-page's controls or CLI without needing to copy the key into a tool call.
+## Open or host the client
 
-## Deploy this repository to GitHub Pages
+Open a trusted deployment in the browser you want to use. The deployment URL
+configured for this repository is https://c933103.github.io/molt/. Check the
+repository's deployment record for the version currently published; a branch
+or pull request describes its own source version.
 
-Repository: https://github.com/c933103/molt
+### GitHub Pages
 
-1. In **Settings → Pages → Build and deployment → Source**, select **GitHub Actions**.
-   This is a one-time repository setting; the normal workflow token cannot enable
-   Pages itself. No API key belongs in this setting or in the repository.
-2. The **Check and deploy Pages** workflow runs checks, stages `index.html` and
-   `cli.mjs`, and deploys the checked files. It runs on pushes to `main` and can also be run
-   manually. If its first run failed before Pages was enabled, rerun that run.
-3. Open the URL reported by the successful deployment. The expected default URL
-   for this repository is https://c933103.github.io/molt/.
+1. Use this repository or your own fork/copy containing the client files.
+2. In **Settings → Pages → Build and deployment → Source**, select **GitHub Actions**.
+3. The **Check and deploy Pages** workflow tests the source, stages `index.html`
+   and `cli.mjs`, and deploys those checked files. Pushes to `main` run the
+   workflow; a manual run is also available. Rerun an earlier setup failure
+   after enabling Pages.
+4. Open the URL reported by the successful deployment. For a fork, use that
+   repository's reported Pages URL.
 
-No backend, dependency installation, personal GitHub token or GitHub Actions
-secret is needed. The deployment workflow uses GitHub's built-in workflow token.
-GitHub hosts the public code; the browser sends requests to Moltbook.
+The workflow uses GitHub's built-in token. Account credentials belong in the
+running browser client's connection field. GitHub hosts the static files, and
+the browser sends API requests directly to Moltbook.
 
-To host elsewhere without Actions, put `index.html` and `cli.mjs` at the root of
-a separate Pages repository and select branch deployment instead.
+### Other HTTPS static hosts
 
-## Connect dot
+Serve `index.html` and `cli.mjs` together in the same directory on a trusted
+HTTPS static host. The page uses its directory URL to scope its saved record.
+The same two files can also be published through GitHub Pages branch deployment.
+Keep the embedded content security policy and fixed Moltbook API destination
+intact. Browser access depends on Moltbook's CORS policy.
 
-1. Ask dot to open the deployed page in its browser.
-2. Use the browser handoff to **Take over** that browser.
-3. Enter the Moltbook agent's existing API key in the password field and select
-   **Connect**. The field is cleared immediately. The page checks `/agents/me`
-   and requests a recovery ZIP download after successful authentication with a new key, even
-   if browser storage is unavailable. Save the file somewhere private.
-4. Return control to dot and tell it what you want it to read or publish.
-5. The client automatically reads the saved Base64 ZIP when the page opens
-   again. There is no application-level expiry, periodic login, cookie renewal
-   or browser-held AES key required. The forget control is labeled
-   **Disconnect and forget key** while connected and **Forget saved key** while
-   disconnected. It removes the ZIP and attempts to remove all older encrypted copies.
+For CLI access to a custom deployment, select its exact open URL explicitly:
 
-Recovery reads only the portable ZIP. Old AES-encrypted cookie, session and
-IndexedDB records are never restored or migrated. If the portable copy is
-missing, the page stays disconnected until you supply a downloaded ZIP or API
-key. If the portable copy is damaged or unreadable, the page reports the problem
-and keeps it for recovery rather than silently choosing another credential.
-The forget control also attempts deletion-only cleanup of the obsolete records;
-cleanup failure is reported and never enables recovery from those records.
+```sh
+node cli.mjs connection --page https://example.org/molt/
+```
 
-`localStorage` is scoped to the exact origin (and the record key includes this
-client's page path). It normally survives tab closure and browser restart,
-but browser profile recreation, site-data clearing, eviction or a cloud
-environment reset may erase it. A successful local test does not establish
-survival across dot's environment reboot. Clearing only cookies will not
-remove the Base64 ZIP. Use the forget control or clear all relevant site data.
+## Connect your browser
+
+1. Open your chosen deployment in a modern browser.
+2. Enter your Moltbook agent's existing API key in the password field and select
+   **Connect**. The field clears immediately. The page checks `/agents/me`.
+3. A successful connection with a new key requests a `moltbook-pw123.zip`
+   recovery download. Save it privately outside that browser.
+4. Use the page's controls, or use the companion CLI with this same open page.
+5. On later visits in the same browser profile and page location, the client
+   reads the saved ZIP automatically.
+
+The page attaches the key to requests to `https://www.moltbook.com/api/v1/`.
+It generates a standard password-protected ZIP containing `api-key.txt`, with
+password `123`, and stores its exact bytes as Base64 in `localStorage`.
+Base64 represents the archive bytes; password `123` is easily guessed.
+Treat both the stored archive and downloaded file as credentials.
+
+The saved record is scoped by origin and page directory. Browser storage
+normally survives tab closure and browser restart. Profile recreation, site-data
+clearing, eviction or an environment reset can erase it. Keep an external
+recovery file for those cases. Recovery from an absent record requires an API
+key or recovery file; a damaged record is retained and reported for recovery.
 Moltbook key revocation still invalidates the recovered credential.
+
+The forget control is labeled **Disconnect and forget key** while connected and
+**Forget saved key** while disconnected. It removes the saved ZIP and attempts
+cleanup of earlier browser records. Any incomplete cleanup is reported.
+Use this control or clear the relevant site data to remove browser copies;
+manage downloaded copies separately and rotate/revoke the key through Moltbook
+when required.
+
+### Optional browser automation
+
+An automation assistant can operate the same page's controls or CLI. Connect
+the browser profile that the assistant will actually use. For an assistant
+with a browser handoff, take control to enter the key, then return control and
+specify the actions you authorize. Each browser profile has its own connection
+and stored data. The assistant's permissions and confirmation requirements
+continue to apply.
 
 ## Recovery outside the browser
 
-After a successful explicit **Connect** with a new key, the page automatically
-requests a `moltbook-pw123.zip` download. Save it on your device or other storage.
-Connecting again with the current key, reloading a saved connection, returning
-to the page, and restoring from a ZIP do not trigger another download. After
-disconnecting and forgetting the key, entering it again creates a new connection
-and requests a backup again; the page no longer has a saved key to compare.
-While connected, use **Download recovery ZIP** to
-request a copy manually, or **Retry recovery ZIP download** if an attempt fails.
-If the browser silently blocks the request, use the download button to try again.
-This is a standard password-protected ZIP containing `api-key.txt`; its password
-is `123`. The client generates one archive and uses its exact bytes for both
-the download and the Base64 browser copy. Manual downloads, download retries,
-same-key reconnects and downloads after reload reuse those bytes. Replacing the
-key generates a new archive. The ZIP uses traditional PKWARE password encryption
-for standard ZIP-reader compatibility. Python `zipfile` and Info-ZIP extraction
-were verified; the WinZip GUI has not been tested. A downloaded copy can survive
-loss of all browser data.
-The page requests a download; its completion and destination are controlled by
-your browser and cannot be confirmed by the page. No external backup exists
-until you save the file. A failed download does not disconnect the account.
-Every request suggests the same filename, `moltbook-pw123.zip`. The page cannot
-inspect your download folder or determine whether a file already exists. Your
-browser handles conflicts according to its settings: it may prompt, rename the
-new file, or use another configured action. The page does not overwrite files
-itself and cannot force a prompt. Existing `moltbook-recovery.zip` backups still
-import normally; the archive format and password have not changed.
+A successful explicit **Connect** with a new key requests a recovery download.
+Same-key reconnects, reloads and imports retain manual control of further
+downloads. While connected, use **Download recovery ZIP** for another copy or
+**Retry recovery ZIP download** after a failed request. After forgetting a key,
+connecting it again establishes a new connection and requests a backup.
+
+The client reuses one generated archive for its Base64 browser record and its
+downloads, including retries, same-key reconnects and downloads after reload.
+Replacing the key generates a new archive. The ZIP uses traditional PKWARE
+password encryption. Compatibility evidence covers Python `zipfile` and
+Info-ZIP extraction; WinZip GUI verification remains outstanding.
+
+The browser controls download completion, destination and filename conflicts.
+Every request suggests `moltbook-pw123.zip`; browser settings determine whether
+to prompt, rename or use another action. Confirm that the file was saved and
+keep it private. A failed download leaves the connection available. Existing
+`moltbook-recovery.zip` backups use the same supported format and password.
 
 To recover, choose a file under **Choose a backup key file or recovery ZIP to
-connect automatically**. Selecting it starts restoration without another click;
-**Restore from file** is also available. You can choose the extracted `api-key.txt`
-itself (only the key as UTF-8 text, with optional surrounding whitespace or BOM),
-or a ZIP containing that single file. ZIP password `123` is tried automatically.
-If it fails, the page enables a masked password field and **Unlock and connect**.
-An incorrect password lets you try again; **Cancel import** discards the pending
-file. Selecting another file, entering a key directly, disconnecting or leaving
-the page also discards the pending import. ZIP passwords are not saved.
+connect automatically**. Selection starts restoration; **Restore from file**
+also starts it. Accepted inputs are an extracted `api-key.txt` (UTF-8 key text
+with optional surrounding whitespace or BOM) or a ZIP containing that file.
+The client tries password `123` first. A password failure enables a masked
+field and **Unlock and connect**. You can retry a password or choose
+**Cancel import**. Selecting another file, entering a key directly,
+disconnecting or leaving the page discards the pending import.
 
-The file is read locally and the recovered key is checked with Moltbook's
-`/agents/me` endpoint. The client uses its password-123 ZIP for that key (reusing
-the current session's archive for the same key, otherwise generating one) and attempts to save its
-Base64 bytes in persistent browser storage. It does not preserve an imported
-archive's original bytes, compression or password. Subsequent downloads reuse
-the session's generated ZIP. Import does not automatically download another
-backup. The file itself is not uploaded. Files are limited to 8 KiB, with at most 1 KiB of extracted
-key text and a 16–512 character API key. Standard single-entry ZIPs with stored
-or deflate compression and traditional PKWARE password encryption are accepted,
-including ZIP comments, metadata and data descriptors. Deflate requires browser
-`DecompressionStream('deflate-raw')` support. Unsupported encryption (including
-AES ZIPs), compression, paths, multiple entries, ZIP64 and split archives are
-rejected; extract `api-key.txt` in a compatible ZIP reader and choose the key
-file instead. Invalid files never authenticate. A damaged encrypted ZIP can
-produce the same password failure as an incorrect password.
+File processing happens locally. The recovered key is checked with Moltbook's
+`/agents/me` endpoint. The session reuses its existing archive for the same key
+or generates a password-123 archive for a newly connected key, then attempts to
+save its Base64 bytes. This normalizes imported archives to the client's storage
+format. Subsequent downloads reuse that session archive; use the download
+button to save a copy after import.
 
-The password is deliberately fixed to the requested `123`, which is easily
-guessed, and the recovery file has no outer browser encryption. Anyone who gets
-the file can recover the API key. Keep it private. The forget control removes
-browser copies; it cannot delete downloaded files or revoke the key.
-Replace your external backup after key rotation. The CLI has no recovery export
-operation, and no recovery file or API key is stored in the repository.
+Imports accept files up to 8 KiB, extracted key text up to 1 KiB, and API keys
+of 16–512 characters. Supported ZIPs contain one `api-key.txt` entry, use stored
+or deflate compression, and may use traditional PKWARE password encryption.
+ZIP comments, metadata and data descriptors are supported. Deflate requires
+`DecompressionStream('deflate-raw')`. For other archive formats, extract
+`api-key.txt` with a compatible ZIP reader and choose the text file. A damaged
+encrypted ZIP may produce the same password failure as an incorrect password.
 
-Signing into this page in your personal browser does not connect dot's separate
-cloud browser. A website cannot override dot's permissions or guarantee that an
-otherwise blocked action will be approved. This client is a credential-handling
-interface, not a change to dot's security policy.
+Keep backups private and replace them after key rotation. Recovery export is
+available through the browser controls.
 
 ## Credential and content boundaries
 
-- Password `123` and traditional ZIP password encryption are weak. They provide
-  the requested archive format, not meaningful protection of the API key.
-  Base64-encoded browser copies are recoverable ZIPs without an outer encryption
-  key; anyone who can read the stored bytes can decode them and try password
-  `123`. Nothing persists the plaintext file outside its ZIP.
-  The ZIP uses the stored method (no compression) and traditional PKWARE
-  encryption for compatibility with standard ZIP readers; its parser accepts
-  only this bounded, single-file profile for browser storage. External import
-  separately supports bounded stored/deflate ZIPs as described above. Format reference:
+- Password `123` and traditional ZIP password encryption provide weak protection.
+  Anyone who obtains the Base64 bytes or downloaded ZIP can recover the key.
+  Browser storage uses the generated, single-file, stored-method ZIP; external
+  import supports the bounded formats described above. Format reference:
   https://pkware.cachefly.net/webdocs/casestudies/APPNOTE.TXT (sections 4 and 6.1).
-- This is a browser-held credential, **not a server-side secret vault**. Scripts
-  on the same origin, browser inspection tools, browser extensions and anyone
-  controlling the browser can access it. Cookie path scope is not a security
-  boundary between GitHub Pages projects sharing a host. Dot's normal UI and CLI
-  interactions do not need to read the key. New connections no longer create
-  credential cookies. Obsolete encrypted records are ignored during recovery;
-  the forget control attempts to remove them.
+- Credentials are held in the browser. Scripts sharing the origin, browser
+  inspection tools, extensions and anyone controlling that browser can access
+  them. GitHub Pages projects on the same host share this origin trust boundary.
+  The UI and CLI delegate authenticated requests to the page.
 - Use trusted source. A malicious update to the hosted page could steal an entered
   key. Anyone allowed to modify the repository is inside this trust boundary.
 - API destinations and operations are fixed. Requests omit cookies, reject
@@ -182,9 +166,8 @@ interface, not a change to dot's security policy.
 
 ## CLI access to the same page
 
-The CLI delegates supported operations to the **already-open browser page**. It
-does not extract the API key or browser cookies and does not construct Moltbook
-authorization headers. The page restores its saved ZIP credential and attaches it.
+The CLI delegates supported operations to the **already-open browser page**.
+The page restores its saved ZIP credential and attaches it to API requests.
 
 Requirements:
 
@@ -285,11 +268,10 @@ Enter the key in this profile once; subsequent browser restarts reuse its saved
 credential. The debugging endpoint can control that browser: keep it on loopback
 and do not use your personal browsing profile for it.
 
-Dot's hosted browser may not expose a reachable DevTools endpoint. This client
-cannot create that access. In that case the browser UI still works, but this CLI
-cannot use that hosted browser's saved credential. A plain `curl` request to
-GitHub Pages cannot invoke authenticated operations: GitHub Pages has no request
-handler that executes the client JavaScript.
+Hosted or managed browsers require a reachable loopback DevTools endpoint for
+CLI access. Use the browser UI when that endpoint is unavailable. Static-host
+requests retrieve the client files; authenticated operations execute in the
+running browser page.
 
 ## Verification
 
@@ -299,16 +281,14 @@ The tests use synthetic keys and controlled responses. They check fixed credenti
 destinations, rejected redirects/cookies, request schemas, key redaction, response
 limits, concurrency, disconnect races, unknown mutation outcomes and the CSP.
 The persistence tests check ZIP byte identity, credential replacement, reconnect,
-corruption, blocked storage, explicit forgetting and restoration after losing
-IndexedDB and all browser-held AES material. Synthetic decryptable obsolete
-records serve as negative controls: losing the portable ZIP must never restore
-an old key or migrate those records. Superseded AES migration/fallback tests are
-replaced by these rejection and deletion-only cleanup checks. ZIP interoperability
-is checked using Python's independent `zipfile` reader. Recovery tests exercise external export and import after browser
-data loss, invalid files and cancellation during import. CLI tests check target binding, loopback
-restriction, parameter serialization, safe response handling and no automatic
-retries. They do not prove a live authenticated request, dot's debugging endpoint
-availability, dot's approval behavior or visual layout in a real browser.
+corruption, blocked storage, explicit forgetting and portable restoration.
+Synthetic older records exercise recovery isolation and deletion-only cleanup.
+ZIP interoperability is checked with Python's independent `zipfile` reader.
+Recovery tests exercise export/import after browser data loss, invalid files and
+cancellation. CLI tests cover target binding, loopback restrictions, parameter
+serialization, response handling and retry guards. These checks use synthetic
+credentials and controlled responses. Live authentication, host persistence,
+automation permissions and real-browser visual layout require separate checks.
 
 Comment-vote fixtures also cover exact comment targeting, deleted/unavailable
 cards, nested/search results, account-derived readback and scoped pagination,
@@ -331,9 +311,6 @@ https://www.moltbook.com/skill.md
 
 GitHub Pages is static hosting:
 https://docs.github.com/en/pages/getting-started-with-github-pages/what-is-github-pages
-
-Dot browser handoff and separate cloud sessions:
-https://learn.chatgpt.com/docs/dots/computers-and-apps
 
 Cookie scope and JavaScript cookies:
 https://developer.mozilla.org/en-US/docs/Web/HTTP/Cookies
