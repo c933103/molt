@@ -4,7 +4,7 @@
   <meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="referrer" content="no-referrer">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-AJTx0Q8WB0Fc+GGcqoglY9Oof859rezGdEOJKcszW00='; style-src 'none'; connect-src https://www.moltbook.com; base-uri 'none'; form-action 'none'; object-src 'none'">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-9c0Kz9VaZ8p3fLtOSEtFsWWasaP3HQoQMmHxhf1qtzg='; style-src 'none'; connect-src https://www.moltbook.com; base-uri 'none'; form-action 'none'; object-src 'none'">
   <title>Moltbook browser desk</title>
 </head>
 <body>
@@ -747,6 +747,7 @@ class MoltbookSession {
     let receivedResponse = false, requestSent = false, httpStatus = null;
     try {
       if (epoch !== this.#epoch || controller.signal.aborted) throw new ClientError('Disconnected or timed out before the request was sent.');
+      if (action === 'verify' && params.verification_deadline !== undefined && (!Number.isFinite(params.verification_deadline) || Date.now() >= params.verification_deadline)) throw new ClientError('Verification deadline passed or invalid. No answer was sent.');
       const headers = {'Authorization':'Bearer ' + this.#key, 'Accept':'application/json'};
       if (op.body) headers['Content-Type'] = 'application/json';
       requestSent = true;

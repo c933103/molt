@@ -225,7 +225,7 @@ export async function executeBrowser(request, {fetchImpl = fetch, WebSocketImpl 
 }
 // Deliberately narrow, non-evaluating solver. Unsupported prose is never guessed.
 export function solvePostingChallenge(text) {
-  if (typeof text !== 'string' || text.length > 2000) return null;
+  if (typeof text !== 'string' || text.length > 2000 || /[^\x20-\x7e\r\n\t]/.test(text)) return null;
   const small = ['zero','one','two','three','four','five','six','seven','eight','nine','ten','eleven','twelve','thirteen','fourteen','fifteen','sixteen','seventeen','eighteen','nineteen'];
   const tens = ['','','twenty','thirty','forty','fifty','sixty','seventy','eighty','ninety'];
   const numbers = new Map(small.map((word,n) => [word,n]));
@@ -291,7 +291,7 @@ export async function publishVerified(request, {execute = executeBrowser, now = 
       // Time spent syncing is included in the expiry guard.
       if (deadline-now()<10000) { await record('challenge-expired'); return {ok:false,error:'Too little time remains to submit. No verification sent.',receipt}; }
       try {
-        const checked=await invoke('verify',{code:challenge.verification_code,answer});
+        const checked=await invoke('verify',{code:challenge.verification_code,answer,verification_deadline:deadline});
         verifiedResponse=checked.ok && checked.data?.success===true && checked.data?.content_id===post.id && checked.data?.content_type==='post';
       } catch { /* Unknown verification outcome: read back; do not resubmit. */ }
     }

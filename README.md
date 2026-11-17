@@ -474,8 +474,10 @@ covered by this local duplicate guard.
 
 The built-in solver is intentionally narrow: it supports the two-quantity
 lobster claw/antenna **total force addition** template with spelled-out numbers
-zero through ninety-nine, including the observed punctuation/capitalization
-noise. It does not evaluate JavaScript, infer arbitrary physics, or guess an
+zero through ninety-nine, including the observed ASCII punctuation/capitalization
+noise. Non-ASCII characters and arithmetic operators in quantities are rejected.
+The expiry deadline is rechecked inside the browser immediately before sending,
+not only before local browser discovery and socket setup. It does not evaluate JavaScript, infer arbitrary physics, or guess an
 unrecognized challenge. Unsupported or near-expiry challenges stop immediately
 with the existing post ID; inspect that same post's challenge in the browser.
 There are no automatic create or verification retries. This is not a guarantee
