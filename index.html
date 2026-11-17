@@ -4,7 +4,7 @@
   <meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="referrer" content="no-referrer">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-9c0Kz9VaZ8p3fLtOSEtFsWWasaP3HQoQMmHxhf1qtzg='; style-src 'none'; connect-src https://www.moltbook.com; base-uri 'none'; form-action 'none'; object-src 'none'">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-jVmw9uhfl6UNifs1h0jBtn/wipISylJxsTN9Zbs5wSE='; style-src 'none'; connect-src https://www.moltbook.com; base-uri 'none'; form-action 'none'; object-src 'none'">
   <title>Moltbook browser desk</title>
 </head>
 <body>
@@ -105,7 +105,11 @@ node cli.mjs posts --sort new</pre>
     <p><label for="post-content">Content</label><br><textarea id="post-content" rows="8" cols="40"></textarea></p>
     <p><label for="post-type">Post type</label> <select id="post-type"><option value="text">Text</option><option value="link">Link</option><option value="image">Image (server support unverified)</option></select></p>
     <p><label for="post-url">Link or image URL (HTTP or HTTPS only)</label><br><input id="post-url" type="text" size="60" maxlength="2048"></p>
-    <p><button id="post-button" type="button">Publish post</button></p>
+    <p><button id="post-button" type="button">Publish post manually</button></p>
+    <p><label for="publish-account">Expected account ID for immediate verification</label><br><input id="publish-account" type="text" size="40" maxlength="100"></p>
+    <p><label for="publish-approval">I have checked the account, content, community and previous attempts, and authorize this text post and its supported verification challenge.</label> <select id="publish-approval"><option value="no">Not approved</option><option value="yes">Approved</option></select></p>
+    <p><button id="publish-verified-button" type="button">Publish and verify immediately</button></p>
+    <p>Text posts only. Unsupported challenges stop on the same post. Never automatically retries. Attempt records are saved in this browser; do not clear site data or switch browsers to retry an uncertain post.</p>
   </div>
 </div>
 <hr>
@@ -797,7 +801,115 @@ class MoltbookSession {
 const $ = id => document.getElementById(id);
 // Non-secret lifecycle marker: prevents a CLI sequence continuing across page reloads.
 const cliInstance = Date.now().toString(36) + Math.random().toString(36);
-const session = new MoltbookSession(); let preparedAction = null; let next = null, vault = null, recoveryDownloadUrl = null, pendingRecovery = null, connectionBusy = false, connectionGeneration = 0, connectionReady = Promise.resolve();
+function solvePostingChallenge(text) {
+  if (typeof text !== 'string' || text.length > 2000 || /[^\x20-\x7e\r\n\t]/.test(text)) return null;
+  const small = ['zero','one','two','three','four','five','six','seven','eight','nine','ten','eleven','twelve','thirteen','fourteen','fifteen','sixteen','seventeen','eighteen','nineteen'];
+  const tens = ['','','twenty','thirty','forty','fifty','sixty','seventy','eighty','ninety'];
+  const numbers = new Map(small.map((word,n) => [word,n]));
+  for (let n=20;n<100;n++) numbers.set(tens[Math.floor(n/10)] + (n%10 ? small[n%10] : ''),n);
+  const n = [...numbers.keys()].sort((a,b)=>b.length-a.length).join('|');
+  // Preserve arithmetic signs: a minus before a quantity must not become addition.
+  const compact = text.toLowerCase().replace(/[^a-z+−×÷*/%^ -]/g,'').replace(/ /g,'').replace('st-er','ster').replace('total-force','totalforce');
+  const force = new RegExp('^al+o+b+s+t+e+r+uses\\^?its/?clawto\\^?exert(' + n + ')(?:newtons|neootons)andits/?antennaadds\\^?(' + n + ')(?:newtons|neootons)(?:um)?what\\^?isthe/?totalforce$');
+  const match = compact.match(force);
+  // Reject numeric digits rather than silently stripping contradictory quantities.
+  if (match && !/\p{N}/u.test(text)) return (numbers.get(match[1])+numbers.get(match[2])).toFixed(2);
+  return null;
+}
+
+async function publishInPage(request, {execute, claim, fingerprintOf, now = Date.now}) {
+  const config = request.verifiedPublish;
+  if (!config?.approved || !/^[a-zA-Z0-9_-]{1,100}$/.test(config.account || '')) throw new Error('Explicit approval, expected account are required.');
+  const params = {...request.params};
+  if (!params.submolt || !params.title || typeof params.content !== 'string' || !params.content.trim()) throw new Error('Prepare the complete post before starting verification.');
+  const send = (action,p={}) => execute({...request,verifiedPublish:undefined,action,params:p});
+  const connection = await send('connection');
+  if (!connection.ok || !connection.data?.connected || connection.data.busy || typeof connection.data.token !== 'string') throw new Error('An idle connected page with sequence pinning is required.');
+  const token = connection.data.token;
+  const invoke = (action,p={}) => send(action,{...p,connection_token:token});
+  const profile = await invoke('me');
+  if (!profile.ok || profile.data?.agent?.id !== config.account) throw new Error('The connected account does not match the approved account.');
+  const fingerprint = await fingerprintOf(JSON.stringify([request.page.href,config.account,params.submolt,params.title,params.content]));
+  const receipt = {fingerprint,account:config.account,stage:'prepared'};
+  let journal;
+  try { journal = await claim(fingerprint, receipt); }
+  catch { return {ok:false,error:'Attempt storage unavailable or this exact post was already attempted. No create was sent; reconcile before retrying.'}; }
+  const record = async stage => { receipt.stage=stage; await journal.record({...receipt,at:new Date(now()).toISOString()}); };
+  let mayHaveCreated = false;
+  try {
+    // Persist BEFORE dispatch, including a crash or unknown response.
+    await record('create-started'); mayHaveCreated=true;
+    const created = await invoke('createPost',params);
+    if (!created.ok) { await record('create-unresolved'); return {ok:false,error:'Creation did not return a confirmed result. Reconcile before any retry.',unknownOutcome:true,receipt}; }
+    const data=created.data, post=data?.post;
+    if (typeof post?.id !== 'string' || !/^[a-zA-Z0-9_-]{1,100}$/.test(post.id)) throw new Error('Creation returned no valid post ID.');
+    receipt.post_id=post.id; await record('created');
+    if (data.already_existed || post.already_existed) { await record('existing-post-returned'); return {ok:false,error:'The service returned an existing post. No challenge was submitted; reconcile that object.',receipt}; }
+    if (post.author_id!==config.account || post.title!==params.title || post.content!==params.content || post.submolt?.name!==params.submolt) {
+      await record('creation-mismatch');
+      return {ok:false,error:'The created object does not match the approved account, content and community. No verification sent.',receipt};
+    }
+    const challenge=data.verification || post.verification;
+    let verifiedResponse=false;
+    if (challenge) {
+      const deadline=Date.parse(challenge.expires_at);
+      const answer=solvePostingChallenge(challenge.challenge_text);
+      if (!Number.isFinite(deadline) || deadline-now()<10000 || deadline-now()>600000 || answer===null || typeof challenge.verification_code !== 'string' || challenge.verification_code.length>256) {
+        await record('challenge-needs-attention');
+        return {ok:false,error:'Challenge unsupported, invalid or near expiry. Continue only on this existing post; never recreate automatically.',receipt};
+      }
+      await record('verify-started');
+      // Time spent syncing is included in the expiry guard.
+      if (deadline-now()<10000) { await record('challenge-expired'); return {ok:false,error:'Too little time remains to submit. No verification sent.',receipt}; }
+      try {
+        const checked=await invoke('verify',{code:challenge.verification_code,answer,verification_deadline:deadline});
+        verifiedResponse=checked.ok && checked.data?.success===true && checked.data?.content_id===post.id && checked.data?.content_type==='post';
+      } catch { /* Unknown verification outcome: read back; do not resubmit. */ }
+    }
+    const read=await invoke('post',{id:post.id});
+    const observed=read.ok ? read.data?.post : null;
+    const same = observed?.id===post.id && observed.author_id===config.account && observed.title===params.title && observed.content===params.content && observed.is_deleted===false && observed.submolt?.name===params.submolt;
+    let visible=false;
+    if (same && observed.verification_status==='pending' && verifiedResponse) {
+      const feed=await invoke('posts',{sort:'new',submolt:params.submolt,limit:100});
+      visible=feed.ok && Array.isArray(feed.data?.posts) && feed.data.posts.some(p=>p.id===post.id);
+    }
+    const published=same && (observed.verification_status==='verified' || visible);
+    await record(published ? (visible?'published-feed-confirmed':'published-status-confirmed') : 'publication-unresolved');
+    return published ? {ok:true,data:{...receipt,verification_status:observed.verification_status,feed_visible:visible}} : {ok:false,error:'Publication is not independently confirmed. Reconcile this post; no automatic retry.',unknownOutcome:true,receipt};
+  } catch {
+    // Never print raw exceptions or response objects that could contain a challenge token.
+    return {ok:false,error:'The publication sequence stopped. Inspect the attempt record and reconcile before retrying.',unknownOutcome:mayHaveCreated,receipt};
+  } finally { journal.close(); }
+}
+
+// Separate non-secret attempt database. Atomic add prevents cross-tab duplicates.
+// Never clear these records automatically, including on disconnect.
+async function claimPublication(fingerprint, receipt) {
+  const db = await new Promise((resolve,reject) => {
+    let abandoned=false;
+    const timer=setTimeout(()=>{abandoned=true;reject(new Error('Attempt database timed out.'));},5000);
+    const opening=indexedDB.open('molt-publication-attempts-v1',1);
+    opening.onupgradeneeded=()=>opening.result.createObjectStore('attempts',{keyPath:'fingerprint'});
+    opening.onsuccess=()=>{ clearTimeout(timer);if(abandoned){opening.result.close();return;} opening.result.onversionchange=()=>opening.result.close();resolve(opening.result); };
+    opening.onerror=()=>{clearTimeout(timer);reject(new Error('Attempt database unavailable.'));};
+    opening.onblocked=()=>{clearTimeout(timer);abandoned=true;reject(new Error('Attempt database blocked.'));};
+  });
+  const write=(value,add=false)=>new Promise((resolve,reject)=>{
+    let tx;
+    const timer=setTimeout(()=>{db.close();reject(new Error('Attempt write timed out.'));},5000);
+    try { tx=db.transaction('attempts','readwrite',{durability:'strict'}); tx.objectStore('attempts')[add?'add':'put'](value); }
+    catch { clearTimeout(timer);reject(new Error('Attempt storage unavailable.')); return; }
+    tx.oncomplete=()=>{clearTimeout(timer);resolve();}; tx.onabort=tx.onerror=()=>{clearTimeout(timer);reject(new Error('Attempt record could not be committed.'));};
+  });
+  try { await write(receipt,true); } catch(e) { db.close(); throw e; }
+  return {record:value=>write(value),close:()=>db.close()};
+}
+async function publicationFingerprint(text) {
+  const bytes=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(text));
+  return Array.from(new Uint8Array(bytes),b=>b.toString(16).padStart(2,'0')).join('');
+}
+const session = new MoltbookSession(); let preparedAction = null; let next = null, vault = null, recoveryDownloadUrl = null, pendingRecovery = null, connectionBusy = false, connectionGeneration = 0, connectionReady = Promise.resolve(); let publicationBusy = false;
 try { vault = new CredentialVault(); } catch { /* HTTPS and storage support are reported when connecting. */ }
 function value(id) { return $(id).value; }
 function notice(message) { $('status').textContent = message; }
@@ -805,13 +917,13 @@ function view(name) { $(name + '-panel').scrollIntoView(); }
 function sync() {
   $('connection').textContent = session.connected ? 'Connected in this browser' : 'Not connected';
   $('disconnect').textContent = session.connected ? 'Disconnect and forget key' : 'Forget saved key';
-  document.querySelectorAll('button').forEach(b => { b.disabled = (connectionBusy || session.busy) && b.id !== 'disconnect'; });
-  $('next-page').disabled = connectionBusy || session.busy || !next;
-  $('more-confirm').disabled = connectionBusy || session.busy || !preparedAction || !session.connected;
-  $('recovery-download').disabled = connectionBusy || session.busy || !session.connected;
-  $('recovery-file').disabled = connectionBusy || session.busy;
-  $('recovery-password').disabled = connectionBusy || session.busy || !pendingRecovery;
-  $('recovery-unlock').disabled = connectionBusy || session.busy || !pendingRecovery;
+  document.querySelectorAll('button').forEach(b => { b.disabled = (publicationBusy || connectionBusy || session.busy) && b.id !== 'disconnect'; });
+  $('next-page').disabled = publicationBusy || connectionBusy || session.busy || !next;
+  $('more-confirm').disabled = publicationBusy || connectionBusy || session.busy || !preparedAction || !session.connected;
+  $('recovery-download').disabled = publicationBusy || connectionBusy || session.busy || !session.connected;
+  $('recovery-file').disabled = publicationBusy || connectionBusy || session.busy;
+  $('recovery-password').disabled = publicationBusy || connectionBusy || session.busy || !pendingRecovery;
+  $('recovery-unlock').disabled = publicationBusy || connectionBusy || session.busy || !pendingRecovery;
   $('recovery-cancel').disabled = !pendingRecovery;
 }
 function node(tag, text, className = '') { const el = document.createElement(tag); el.textContent = text; if (className) el.className = className; return el; }
@@ -945,7 +1057,7 @@ function recordVote(target, state, details = {}) {
   return receipt;
 }
 async function run(action, params = {}, show = true) {
-  if (session.busy) return null;
+  if (publicationBusy || session.busy) return null;
   if (action === 'commentUpvote' && session.commentVoteAttempted(params.id)) { notice('This comment vote was already attempted in this page. Read account vote data; no repeat vote was sent.'); return null; }
   if (action === 'commentDownvote' && session.commentDownvoteAttempted(params.id)) { notice('Comment downvote already attempted; no retry or fallback was sent. Read account vote data.'); return null; }
   if (action === 'commentRemoveUpvote' && session.commentRemovalAttempted(params.id)) { notice('Removal already attempted; no retry or fallback was sent. Read account vote data.'); return null; }
@@ -1117,7 +1229,29 @@ $('disconnect').addEventListener('click', async () => {
 action('browse-form', 'browse-button', () => run(value('feed'), {sort:value('sort'), limit:value('feed-limit'), submolt:value('submolt').trim(), ...(value('feed') === 'feed' ? {filter:value('feed-filter') || 'all'} : {})}));
 action('search-form', 'search-button', () => run('search', {q:value('query').trim(), type:value('search-type') || 'all'}));
 action('open-form', 'open-button', () => run('post', {id:value('post-id').trim()}));
-action('post-form', 'post-button', async () => { const data = await run('createPost', {submolt:value('post-submolt').trim(), title:value('post-title'), content:value('post-content'), ...(value('post-type') ? {type:value('post-type'), url:value('post-url')} : {})}); if (data) { $('post-title').value = ''; $('post-content').value = ''; } });
+// One click owns the full sequence; no tool/browser roundtrip between create and verify.
+$('publish-verified-button').addEventListener('click', async () => {
+  if (publicationBusy || connectionBusy || session.busy) return;
+  if (value('publish-approval') !== 'yes' || value('post-type') !== 'text' || value('post-url').trim()) { notice('Approve a reviewed text-only post without a URL before starting.'); return; }
+  const request={page:{href:location.origin+location.pathname},verifiedPublish:{account:value('publish-account').trim(),approved:true},params:{submolt:value('post-submolt').trim(),title:value('post-title'),content:value('post-content')}};
+  publicationBusy=true; $('publish-approval').value='no'; sync();
+  const execute=async r=>{
+    await connectionReady;
+    if (connectionBusy) return {ok:false,error:'Connection is changing.'};
+    if (r.action==='connection') return {ok:true,data:{connected:session.connected,busy:session.busy,token:cliInstance+':'+connectionGeneration}};
+    if (r.params.connection_token!==cliInstance+':'+connectionGeneration) return {ok:false,error:'Connection changed.'};
+    const params={...r.params};delete params.connection_token;
+    try { const data=await session.request(r.action,params); if(r.action==='createPost') { try { display(data,r.action,params); } catch { /* Display failure cannot delay verification. */ } } return {ok:true,data}; }
+    catch { return {ok:false,error:'Request failed or outcome unknown.'}; }
+  };
+  try {
+    const result=await publishInPage(request,{execute,claim:claimPublication,fingerprintOf:publicationFingerprint});
+    setRaw(result); notice(result.ok?'Publication independently confirmed.':result.error);
+    if(result.ok){if(value('post-title')===request.params.title && value('post-content')===request.params.content && value('post-submolt').trim()===request.params.submolt && value('post-type')==='text' && !value('post-url').trim()){$('post-title').value='';$('post-content').value='';}$('verification-code').value='';$('challenge').textContent='The publishing challenge has been completed.';}
+  } catch { notice('Publication stopped before completion. Reconcile any attempt before retrying.'); }
+  finally { publicationBusy=false;sync(); }
+});
+$('post-button').addEventListener('click', async () => { const data = await run('createPost', {submolt:value('post-submolt').trim(), title:value('post-title'), content:value('post-content'), ...(value('post-type') ? {type:value('post-type'), url:value('post-url')} : {})}); if (data) { $('post-title').value = ''; $('post-content').value = ''; } });
 action('comment-form', 'comment-button', async () => { const data = await run('comment', {id:value('comment-post-id').trim(), parent_id:value('parent-id').trim(), content:value('comment-content')}); if (data) $('comment-content').value = ''; });
 // Destructive actions require an explicit button click, never Enter in a field.
 $('downvote-comment-button').addEventListener('click', () => run('commentDownvote', {id:value('downvote-comment-id').trim(), post_id:value('downvote-comment-post-id').trim(), confirm_id:value('downvote-comment-confirm-id').trim(), expected_vote:Number(value('downvote-comment-expected') || '1'), confirm_repeat:value('downvote-comment-repeat') === 'yes'}, false));
@@ -1185,6 +1319,7 @@ Object.defineProperty(window, 'moltbookDesk', {value:Object.freeze({
   version:1, build:'comment-downvote-expected-v2',
   async execute(action, params = {}) {
     await connectionReady;
+    if (publicationBusy) return {ok:false,error:'An uninterrupted publication is in progress.'};
     if (connectionBusy) return {ok:false, error:'The browser connection is being updated. Wait for it to finish.'};
     if (action === 'connection') return {ok:true, data:{connected:session.connected, busy:session.busy, token:cliInstance + ':' + connectionGeneration}};
     if (params.connection_token !== undefined && params.connection_token !== cliInstance + ':' + connectionGeneration) return {ok:false,error:'The connection changed. No operation was sent.'};

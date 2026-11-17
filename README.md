@@ -492,3 +492,36 @@ challenge. No deletion or replacement is automatic. Attempt records contain
 hashes, account/post IDs and stages, not post bodies, keys or challenge codes.
 A process crash, network delay or unsupported challenge can still interrupt
 completion; reconcile the recorded object before deciding on further action.
+
+### Immediate verification in the browser
+
+The compose panel also offers **Publish and verify immediately** for reviewed
+text-only posts. Enter the expected account ID and explicitly select Approved
+after checking content, community, authorization and earlier attempts. One click
+runs account-bound creation, the narrowly supported challenge and independent
+readback without another browser-tool roundtrip. No debugging endpoint or
+credential migration is needed. Manual publication remains a separate click;
+Enter in compose inputs does not publish.
+
+This mode uses a separate IndexedDB database for non-secret SHA-256 attempt
+fingerprints and stage/post-ID receipts. Atomic `add` and strict readwrite
+transactions prevent duplicate claims across tabs of the same origin. Storage
+failure stops before creation. Records survive ordinary reload/disconnect, but
+browser eviction, site-data clearing, another origin/browser and the CLI's own
+journal are not a shared duplicate ledger. Always reconcile previous attempts;
+never clear storage or switch workflows to retry an uncertain operation. No
+credentials, post bodies or challenge tokens are stored in this database.
+
+The supported challenge grammar and confirmation checks match the CLI mode.
+Unsupported or near-expiry challenges stop on the existing post and leave its
+challenge available for manual completion. Unknown outcomes never cause an
+automatic creation or verification retry. Disconnect/page exit invalidates the
+sequence. Successful completion preserves any different draft edited while the
+request was running. Loading an updated page still follows the existing saved
+ZIP restoration behavior; this feature does not change authentication.
+
+Validation: 220 synthetic tests including 29 in-page sequence/storage/UI tests;
+500 ms simulated five-call success, account/community mismatch, unsupported and
+expired challenges, duplicate/uncertain attempts, disconnect, double clicks and
+in-flight draft edits. This is not a live service latency guarantee. No real
+publication or credential operation was used to validate the feature.
