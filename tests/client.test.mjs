@@ -8,8 +8,10 @@ import vm from 'node:vm';
 const html = readFileSync(new URL('../index.html', import.meta.url), 'utf8');
 const core = html.match(/\/\/ BEGIN CLIENT\n([\s\S]*?)\/\/ END CLIENT/)[1];
 const KEY = 'moltbook_test_fixture_never_a_real_key';
-function setup(fetchImpl) {
+function setup(fetchImpl, globals = {}) {
   const context = {fetch:fetchImpl, URL, URLSearchParams, AbortController, TextDecoder, TextEncoder, Uint8Array, btoa, atob, setTimeout, clearTimeout};
+  // Use an explicit global facade: Node VM contextification swallows some host getter errors.
+  if (Object.getOwnPropertyNames(globals).length) context.globalThis=globals;
   vm.runInNewContext(core + '\nthis.Session = MoltbookSession; this.operation = operation; this.Vault = CredentialVault; this.Zip = CredentialZip;', context);
   const session = new context.Session(); session.connect(KEY);
   return {session, operation:context.operation, Vault:context.Vault, Zip:context.Zip};
@@ -128,27 +130,33 @@ test('repeated delete clicks cannot race an in-flight deletion', async () => {
   await assert.rejects(session.request('deletePost',params),/already running/);
   release(response()); await pending; assert.equal(calls,1);
 });
-test('the published page has exact CSP hashes, encrypted cookie storage and no active forum HTML', () => {
+test('the published page has exact CSP hashes, portable ZIP storage and no active forum HTML', () => {
   const script = html.match(/<script\b[^>]*>([\s\S]*?)<\/script>/)[1];
   assert.ok(html.includes('sha256-' + createHash('sha256').update(script).digest('base64')));
   assert.match(html, /style-src 'none'/);
   assert.equal(html.includes('__CSP__'), false);
   assert.match(html, /connect-src https:\/\/www\.moltbook\.com/);
-  assert.doesNotMatch(script, /\b(localStorage|innerHTML|document\.write|eval|sendBeacon)\b/);
-  assert.match(script, /generateKey\(\{name:'AES-GCM', length:256\}, false/);
-  assert.match(script, /Max-Age=.*Secure; SameSite=Strict/);
+  assert.doesNotMatch(script, /\b(innerHTML|document\.write|eval|sendBeacon)\b/);
+  assert.match(script, /globalThis\.localStorage/);
+  assert.match(script, /CredentialZip\.unpack\(archive,'123'\)/);
+  assert.match(script, /Max-Age=0; Secure; SameSite=Strict/);
   assert.doesNotMatch(html, /<script[^>]+src=|<img\b|<iframe\b/);
   new vm.Script(script);
 });
 
 // A deliberately small asynchronous IndexedDB fixture; no third-party dependencies.
-// The real Web Crypto implementation performs every encrypt/decrypt operation.
+// Only synthetic records are used; recovery never reads this obsolete database.
 function browserFixture() {
-  const keys = new Map(), writes = [], sessionValues = new Map(); let cookie = '', clock = Date.now();
+  const keys = new Map(), writes = [], sessionValues = new Map(), localValues = new Map(); let cookie = '', clock = Date.now();
   const sessionStorage = {
     getItem:id => sessionValues.get(id) ?? null,
     setItem:(id,value) => sessionValues.set(id,String(value)),
     removeItem:id => sessionValues.delete(id)
+  };
+  const localStorage = {
+    getItem:id => localValues.get(id) ?? null,
+    setItem:(id,value) => localValues.set(id,String(value)),
+    removeItem:id => localValues.delete(id)
   };
   const doc = {
     get cookie() { return cookie; },
@@ -176,157 +184,222 @@ function browserFixture() {
     }
   };
   const idb = {open() { const req = {}; setImmediate(() => { req.result = db; req.onsuccess?.(); }); return req; }};
-  const opts = {document:doc, indexedDB:idb, crypto:webcrypto, location:{href:'https://c933103.github.io/molt/'}, sessionStorage, now:() => clock};
-  return {opts, keys, writes, doc, sessionValues, setCookie:v => { cookie = v; }, advance:ms => { clock += ms; }};
+  const opts = {document:doc, indexedDB:idb, crypto:webcrypto, location:{href:'https://c933103.github.io/molt/'}, sessionStorage, localStorage, now:() => clock};
+  return {opts, keys, writes, doc, sessionValues, localValues, localStorage, setCookie:v => { cookie = v; }, advance:ms => { clock += ms; }};
 }
-test('saved cookie and browser backup are encrypted; the wrapping key cannot be exported', async () => {
-  const {Vault} = setup(); const f = browserFixture(); const vault = new Vault(f.opts);
-  assert.equal(await vault.save(KEY), true);
-  assert.equal(f.writes.some(w => w.includes(KEY)), false);
-  assert.match(f.doc.cookie, /^__Secure-moltbook-desk-v1=v2\.[A-Za-z0-9_-]+$/);
-  assert.match(f.writes[0], /Path=\/molt\/; Max-Age=34560000; Secure; SameSite=Strict$/);
-  const key = [...f.keys.values()][0];
-  assert.equal(key.extractable, false);
-  assert.equal([...f.keys.values()].some(v => typeof v === 'string' && v.includes(KEY)), false);
-  assert.equal(f.sessionValues.size,1);
-  assert.equal([...f.sessionValues.values()][0],f.doc.cookie.split('=')[1]);
-  assert.equal([...f.sessionValues.values()].some(v => v.includes(KEY)),false);
-  await assert.rejects(webcrypto.subtle.exportKey('raw', key));
-  assert.equal(await new Vault(f.opts).restore(), KEY);
-});
-test('fresh nonce changes ciphertext; tampered cookies cannot override the encrypted backup', async () => {
-  const {Vault} = setup(); const f = browserFixture(); const vault = new Vault(f.opts);
-  await vault.save(KEY); const first = f.doc.cookie;
-  await vault.save(KEY); assert.notEqual(f.doc.cookie, first);
-  const token = f.doc.cookie; const index = token.length - 10;
-  f.setCookie(token.slice(0,index) + (token[index] === 'A' ? 'B' : 'A') + token.slice(index + 1));
-  assert.equal(await new Vault(f.opts).restore(), KEY);
-  f.keys.set('https://c933103.github.io/molt/|ciphertext', f.doc.cookie.split('=')[1]);
-  await assert.rejects(new Vault(f.opts).restore(), /could not be restored/);
-});
-test('disconnect removes cookie, session storage, backup and saved key, including a queued save racing with logout', async () => {
-  const {Vault} = setup(); const f = browserFixture(); const vault = new Vault(f.opts);
-  await vault.save(KEY); await vault.forget();
-  assert.equal(f.doc.cookie, ''); assert.equal(f.keys.size, 0); assert.equal(f.sessionValues.size,0); assert.equal(await vault.restore(), null);
-  const saving = vault.save(KEY); const forgetting = vault.forget();
-  assert.equal(await saving, false); await forgetting;
-  assert.equal(f.doc.cookie, ''); assert.equal(f.keys.size, 0); assert.equal(f.sessionValues.size,0);
-});
-test('cookie expiry requires neither manual reconnect nor renewal, even years later', async () => {
-  const {Vault} = setup(); const f = browserFixture(); const vault = new Vault(f.opts);
-  await vault.save(KEY); f.advance(5 * 365 * 24 * 60 * 60 * 1000); f.setCookie('');
-  const writesBefore = f.writes.length;
-  assert.equal(await new Vault(f.opts).restore(), KEY);
-  assert.equal(f.writes.length, writesBefore); assert.equal(f.doc.cookie, '');
-});
-test('encrypted credentials cannot be replayed at a different Pages path', async () => {
-  const {Vault} = setup(); const f = browserFixture(); await new Vault(f.opts).save(KEY);
-  const another = new Vault({...f.opts, location:{href:'https://c933103.github.io/another/'}});
-  await assert.rejects(another.restore(), /could not be restored/);
-});
-test('missing encryption keys and blocked browser storage never cause plaintext persistence', async () => {
-  const {Vault} = setup(); const f = browserFixture(); await new Vault(f.opts).save(KEY); f.keys.clear();
-  await assert.rejects(new Vault(f.opts).restore(), /could not be restored/);
-  const broken = new Vault({...f.opts, indexedDB:{open() { throw new Error('Blocked'); }}});
-  await assert.rejects(broken.save(KEY), /storage is unavailable/);
-  assert.equal(f.writes.some(w => w.includes(KEY)), false);
-});
-test('HTTPS is required; encrypted browser persistence still works when cookies are blocked', async () => {
-  const {Vault} = setup(); const f = browserFixture();
-  assert.throws(() => new Vault({...f.opts, location:{href:'http://example.invalid/molt/'}}), /HTTPS/);
-  const blockedCookies = {get cookie() { return ''; }, set cookie(_) {}};
-  const blocked = new Vault({...f.opts, document:blockedCookies});
-  assert.equal(await blocked.save(KEY), true);
-  assert.equal(await new Vault({...f.opts, document:blockedCookies}).restore(), KEY);
-});
 
-test('stored envelope contains a real password-protected ZIP readable by Python zipfile', async () => {
-  const {Vault,Zip} = setup(); const f = browserFixture(); await new Vault(f.opts).save(KEY);
+// Negative control: a genuinely decryptable obsolete credential must be ignored.
+async function saveLegacy(f,value = KEY) {
   const scope = 'https://c933103.github.io/molt/';
-  const bytes = Buffer.from(f.keys.get(scope + '|ciphertext').slice(3),'base64url');
-  const archive = new Uint8Array(await webcrypto.subtle.decrypt({name:'AES-GCM',iv:bytes.subarray(0,12),additionalData:new TextEncoder().encode('Moltbook browser desk v2|' + scope),tagLength:128},f.keys.get(scope),bytes.subarray(12)));
+  const {Zip} = setup();
+  const key = await webcrypto.subtle.generateKey({name:'AES-GCM',length:256},false,['encrypt','decrypt']);
+  const iv = webcrypto.getRandomValues(new Uint8Array(12)), archive = Zip.pack(value,webcrypto);
+  let token;
+  try {
+    const encrypted = await webcrypto.subtle.encrypt({name:'AES-GCM',iv,additionalData:new TextEncoder().encode('Moltbook browser desk v2|' + scope),tagLength:128},key,archive);
+    token = 'v2.' + Buffer.concat([Buffer.from(iv),Buffer.from(encrypted)]).toString('base64url');
+  } finally { archive.fill(0); }
+  f.keys.set(scope,key); f.keys.set(scope + '|ciphertext',token);
+  f.sessionValues.set('moltbook-browser-desk-v1|' + scope,token);
+  f.doc.cookie = '__Secure-moltbook-desk-v1=' + token + '; Path=/molt/; Max-Age=34560000; Secure; SameSite=Strict';
+}
+const PORTABLE_NAME = 'moltbook-browser-desk-recovery-zip-v1|https://c933103.github.io/molt/';
+test('persistent Base64 and the exported archive are identical password-protected ZIP bytes', async () => {
+  const {Vault,Zip,session} = setup(); const f = browserFixture(), vault = new Vault(f.opts);
+  const archive = session.recoveryArchive(webcrypto);
+  assert.equal(await vault.save(archive),true);
+  const encoded = f.localValues.get(PORTABLE_NAME);
+  assert.deepEqual(Buffer.from(encoded,'base64'),Buffer.from(archive));
   assert.equal(Zip.unpack(archive),KEY);
   assert.throws(() => Zip.unpack(archive,'124'),/password|damaged/);
+  assert.equal(f.keys.size,0); assert.equal(f.doc.cookie,''); assert.equal(f.sessionValues.size,0);
   const independent = spawnSync('python3',['-c',[
-    'import io, sys, zipfile',
-    'z = zipfile.ZipFile(io.BytesIO(sys.stdin.buffer.read()))',
-    'assert z.namelist() == ["api-key.txt"]',
+    'import io,sys,zipfile',
+    'z=zipfile.ZipFile(io.BytesIO(sys.stdin.buffer.read()))',
+    'assert z.namelist()==["api-key.txt"]',
     'assert z.getinfo("api-key.txt").flag_bits & 1',
-    'assert z.getinfo("api-key.txt").compress_type == zipfile.ZIP_STORED',
-    'try:',
-    '    z.read("api-key.txt")',
-    'except RuntimeError:',
-    '    pass',
-    'else:',
-    '    raise AssertionError("No password was required")',
-    'try:',
-    '    z.read("api-key.txt", pwd=b"124")',
-    'except RuntimeError:',
-    '    pass',
-    'else:',
-    '    raise AssertionError("Wrong password was accepted")',
-    'sys.stdout.buffer.write(z.read("api-key.txt", pwd=b"123"))'
+    'assert z.getinfo("api-key.txt").compress_type==zipfile.ZIP_STORED',
+    'for password in [None,b"124"]:',
+    ' try: z.read("api-key.txt",pwd=password)',
+    ' except RuntimeError: pass',
+    ' else: raise AssertionError("Incorrect or missing password accepted")',
+    'sys.stdout.buffer.write(z.read("api-key.txt",pwd=b"123"))'
   ].join('\n')],{input:Buffer.from(archive),encoding:'utf8',timeout:5000});
   assert.equal(independent.status,0,independent.stderr); assert.equal(independent.stdout,KEY);
 });
 
-test('session storage restores the original authentication key when cookie and backup ciphertext are absent', async () => {
-  let authorization;
-  const {Vault,session} = setup(async (_,opts) => { authorization=opts.headers.Authorization; return response(); });
-  const f = browserFixture(); await new Vault(f.opts).save(KEY);
-  f.setCookie(''); f.keys.delete('https://c933103.github.io/molt/|ciphertext');
-  const writesBefore = f.writes.length;
-  session.disconnect(); session.connect(await new Vault(f.opts).restore()); await session.request('me');
-  assert.equal(authorization,'Bearer ' + KEY);
-  assert.equal(f.writes.length,writesBefore); assert.equal(f.doc.cookie,'');
+test('recovery uses only localStorage after losing IndexedDB, cookies, session storage and Web Crypto', async () => {
+  const {Vault,session} = setup(); const f = browserFixture();
+  const archive = session.recoveryArchive(webcrypto); await new Vault(f.opts).save(archive);
+  let accesses = 0;
+  const forbidden = () => { accesses++; throw new Error(KEY); };
+  const opts = {...f.opts,indexedDB:{open:forbidden},sessionStorage:{getItem:forbidden},document:{get cookie() { return forbidden(); }},crypto:{}};
+  const restored = await new Vault(opts).restore();
+  assert.equal(restored.key,KEY); assert.deepEqual(restored.archive,archive); assert.equal(accesses,0);
+  session.disconnect(); session.connect(restored.key,restored.archive); restored.archive.fill(0);
+  assert.deepEqual(session.recoveryArchive({}),archive,'Reload and download require no new randomness');
 });
 
-test('a new tab gets its own session copy from persistent storage without cookie renewal', async () => {
-  const {Vault} = setup(); const f = browserFixture(); await new Vault(f.opts).save(KEY);
-  const writesBefore = f.writes.length; f.sessionValues.clear(); f.setCookie('');
-  assert.equal(await new Vault(f.opts).restore(),KEY);
-  assert.equal(f.sessionValues.size,1); assert.match([...f.sessionValues.values()][0],/^v2\./);
-  assert.equal(f.writes.length,writesBefore); assert.equal(f.doc.cookie,'');
+test('replacement B survives reconnect and cannot resurrect obsolete A after localStorage loss', async () => {
+  const {Vault,Zip} = setup(); const f = browserFixture(); await saveLegacy(f,KEY);
+  const vault = new Vault(f.opts), newer = KEY+'_replacement';
+  await vault.save(Zip.pack(KEY,webcrypto)); await vault.save(Zip.pack(newer,webcrypto));
+  assert.equal((await new Vault(f.opts).restore()).key,newer);
+  f.localValues.clear();
+  assert.equal(await new Vault(f.opts).restore(),null);
+  assert.equal(f.keys.size,2,'The decryptable negative-control records still exist');
+  assert.equal(f.sessionValues.size,1); assert.ok(f.doc.cookie);
 });
 
-test('blocked session storage does not prevent persistent restore or expose plaintext', async () => {
-  const {Vault} = setup(); const f = browserFixture();
-  const denied = {getItem() { throw new Error('Denied'); },setItem() { throw new Error('Denied'); },removeItem() { throw new Error('Denied'); }};
-  const vault = new Vault({...f.opts,sessionStorage:denied});
-  assert.equal(await vault.save(KEY),true); assert.equal(await vault.restore(),KEY);
-  assert.equal(f.sessionValues.size,0); assert.equal(f.writes.some(w => w.includes(KEY)),false);
-  await assert.rejects(vault.forget(),/remove all saved copies/);
-  assert.equal(f.doc.cookie,''); assert.equal(f.keys.size,0);
+test('obsolete v1/v2 records never restore or migrate, even when all decryption material survives', async t => {
+  for (const version of [1,2]) await t.test('v'+version,async () => {
+    const {Vault} = setup(); const f = browserFixture(); await saveLegacy(f,KEY);
+    if (version === 1) {
+      const scope='https://c933103.github.io/molt/', key=f.keys.get(scope);
+      const iv=webcrypto.getRandomValues(new Uint8Array(12));
+      const encrypted=await webcrypto.subtle.encrypt({name:'AES-GCM',iv,additionalData:new TextEncoder().encode('Moltbook browser desk v1|'+scope),tagLength:128},key,new TextEncoder().encode(JSON.stringify({key:KEY})));
+      const token='v1.'+Buffer.concat([Buffer.from(iv),Buffer.from(encrypted)]).toString('base64url');
+      f.keys.set(scope+'|ciphertext',token); f.sessionValues.set('moltbook-browser-desk-v1|'+scope,token); f.setCookie('__Secure-moltbook-desk-v1='+token);
+    }
+    const before=[...f.keys], cookie=f.doc.cookie, tab=[...f.sessionValues];
+    assert.equal(await new Vault(f.opts).restore(),null);
+    assert.deepEqual([...f.keys],before); assert.equal(f.doc.cookie,cookie); assert.deepEqual([...f.sessionValues],tab);
+    assert.equal(f.localValues.size,0,'There is no migration');
+  });
 });
 
-test('stale or damaged session data cannot override the saved key or resurrect it after logout', async () => {
-  const {Vault} = setup(); const f = browserFixture(); const vault = new Vault(f.opts);
-  await vault.save(KEY); const [name,oldToken] = [...f.sessionValues.entries()][0];
-  const newer = KEY + '_updated'; await vault.save(newer);
-  f.sessionValues.set(name,oldToken); assert.equal(await new Vault(f.opts).restore(),newer);
-  f.sessionValues.set(name,'v2.' + 'A'.repeat(200)); assert.equal(await new Vault(f.opts).restore(),newer);
-  f.keys.delete('https://c933103.github.io/molt/|ciphertext'); f.setCookie(''); f.sessionValues.set(name,'v2.' + 'A'.repeat(200));
-  await assert.rejects(new Vault(f.opts).restore(),/could not be restored/);
-  await vault.forget(); f.sessionValues.set(name,oldToken);
-  await assert.rejects(new Vault(f.opts).restore(),/could not be restored/);
+test('corrupt portable ZIP fails closed without exposing contents, deleting copies or falling back', async t => {
+  const {Vault,Zip} = setup();
+  const good=Zip.pack(KEY,webcrypto), damaged=good.slice(); damaged[45]^=255;
+  for (const value of ['',KEY,'!'.repeat(240),Buffer.from(damaged).toString('base64'),Buffer.from(good.subarray(0,80)).toString('base64'),'A'.repeat(940),Buffer.from(good).toString('base64').replace(/=+$/,'')]) {
+    await t.test('invalid stored value',async () => {
+      const f=browserFixture(); await saveLegacy(f,KEY); f.localValues.set(PORTABLE_NAME,value);
+      const before=[...f.keys], cookie=f.doc.cookie, tab=[...f.sessionValues];
+      await assert.rejects(new Vault(f.opts).restore(),e => e.name==='ClientError' && /saved recovery ZIP is invalid/.test(e.message) && !e.message.includes(KEY));
+      assert.equal(f.localValues.get(PORTABLE_NAME),value); assert.deepEqual([...f.keys],before); assert.equal(f.doc.cookie,cookie); assert.deepEqual([...f.sessionValues],tab);
+    });
+  }
 });
 
-test('legacy connections upgrade to ZIP without cookie renewal or manual reconnection', async () => {
-  const {Vault} = setup(); const f = browserFixture(); const scope = 'https://c933103.github.io/molt/';
-  const key = await webcrypto.subtle.generateKey({name:'AES-GCM',length:256},false,['encrypt','decrypt']);
-  const iv = webcrypto.getRandomValues(new Uint8Array(12));
-  const ciphertext = await webcrypto.subtle.encrypt({name:'AES-GCM',iv,additionalData:new TextEncoder().encode('Moltbook browser desk v1|' + scope),tagLength:128},key,new TextEncoder().encode(JSON.stringify({key:KEY})));
-  const token = 'v1.' + Buffer.concat([Buffer.from(iv),Buffer.from(ciphertext)]).toString('base64url');
-  f.keys.set(scope,key); f.keys.set(scope + '|ciphertext',token); f.setCookie('__Secure-moltbook-desk-v1=' + token);
-  const originalCookie = f.doc.cookie;
-  assert.equal(await new Vault(f.opts).restore(),KEY);
-  assert.match(f.keys.get(scope + '|ciphertext'),/^v2\./);
-  assert.equal([...f.sessionValues.values()][0],f.keys.get(scope + '|ciphertext'));
-  assert.equal(f.doc.cookie,originalCookie); assert.equal(f.writes.length,0);
-  assert.equal(await new Vault(f.opts).restore(),KEY);
-  // Also preserve old cookie-only connections whose wrapping key still exists.
-  f.keys.delete(scope + '|ciphertext'); f.sessionValues.clear();
-  assert.equal(await new Vault(f.opts).restore(),KEY); assert.equal(f.writes.length,0);
+test('denied portable storage reports a sanitized error and never uses old records', async t => {
+  for (const localStorage of [null,{getItem() { throw new Error(KEY); }}]) await t.test('unavailable',async () => {
+    const {Vault} = setup(); const f=browserFixture(); await saveLegacy(f,KEY);
+    await assert.rejects(new Vault({...f.opts,localStorage}).restore(),e => /Browser persistent ZIP storage is unavailable/.test(e.message) && /Saved copies were not removed/.test(e.message) && !e.message.includes(KEY));
+    assert.equal(f.keys.size,2); assert.equal(f.localValues.size,0);
+  });
+});
+
+test('empty readable storage returns no connection with no writes or network access', async () => {
+  let calls=0; const {Vault}=setup(() => { calls++; throw new Error(); }); const f=browserFixture();
+  assert.equal(await new Vault(f.opts).restore(),null);
+  assert.equal(f.keys.size,0); assert.equal(f.writes.length,0); assert.equal(f.sessionValues.size,0); assert.equal(calls,0);
+});
+
+test('failed ZIP writes retain the previous copy and sanitize storage errors', async () => {
+  const {Vault,Zip}=setup(); const f=browserFixture(); await new Vault(f.opts).save(Zip.pack(KEY,webcrypto));
+  const original=f.localValues.get(PORTABLE_NAME);
+  const denied={getItem:() => original,setItem() { throw new Error(KEY); }};
+  await assert.rejects(new Vault({...f.opts,localStorage:denied}).save(Zip.pack(KEY+'_new',webcrypto)),e => /could not save the recovery ZIP/.test(e.message) && !e.message.includes(KEY));
+  assert.equal(f.localValues.get(PORTABLE_NAME),original); assert.equal((await new Vault(f.opts).restore()).key,KEY);
+  const ignored={getItem:() => original,setItem() {}};
+  await assert.rejects(new Vault({...f.opts,localStorage:ignored}).save(Zip.pack(KEY+'_new',webcrypto)),/could not save the recovery ZIP/);
+});
+
+test('save validates a bounded ZIP before changing storage and owns the queued bytes', async () => {
+  const {Vault,Zip}=setup(); const f=browserFixture(), vault=new Vault(f.opts);
+  for (const invalid of [KEY,new Uint8Array(10000),Zip.pack(KEY,webcrypto,'other')]) await assert.rejects(vault.save(invalid),/Invalid recovery ZIP/);
+  assert.equal(f.localValues.size,0);
+  const archive=Zip.pack(KEY,webcrypto), original=archive.slice();
+  const pending=vault.save(archive); archive.fill(0); assert.equal(await pending,true);
+  assert.deepEqual((await vault.restore()).archive,original);
+});
+
+test('one generated archive is reused for repeated export and same-key reconnect; replacement invalidates it', () => {
+  const {session,Zip}=setup(); let randomCalls=0;
+  const crypt={getRandomValues(bytes) { randomCalls++; return webcrypto.getRandomValues(bytes); }};
+  const archive=session.recoveryArchive(crypt), copy=archive.slice(); archive.fill(0);
+  session.connect(KEY);
+  assert.deepEqual(session.recoveryArchive(crypt),copy); assert.equal(randomCalls,1);
+  session.connect(KEY+'_new'); const newer=session.recoveryArchive(crypt);
+  assert.equal(Zip.unpack(newer),KEY+'_new'); assert.notDeepEqual(newer,copy); assert.equal(randomCalls,2);
+  session.disconnect(); assert.throws(() => session.recoveryArchive(crypt),/Connect this browser/);
+});
+
+test('restored archive must match the session credential', () => {
+  const {session,Zip}=setup(); const archive=session.recoveryArchive(webcrypto);
+  assert.throws(() => session.connect(KEY,Zip.pack(KEY+'_other',webcrypto)),/does not match/);
+  assert.deepEqual(session.recoveryArchive({}),archive);
+});
+
+test('forget deletes portable and obsolete records, with no encryption API or stored-key reads', async () => {
+  const {Vault,Zip}=setup(); const f=browserFixture(); await saveLegacy(f,KEY);
+  const vault=new Vault({...f.opts,crypto:{}}); await vault.save(Zip.pack(KEY+'_new',webcrypto));
+  const scope='https://c933103.github.io/another/'; f.keys.set(scope,'unrelated'); f.sessionValues.set('unrelated','keep'); f.localValues.set('unrelated','keep');
+  await vault.forget();
+  assert.equal(f.localValues.has(PORTABLE_NAME),false); assert.deepEqual([...f.keys],[[scope,'unrelated']]);
+  assert.deepEqual([...f.sessionValues],[['unrelated','keep']]); assert.equal(f.doc.cookie,'');
+  assert.equal(f.localValues.get('unrelated'),'keep'); assert.equal(await vault.restore(),null);
+});
+
+test('forget cancels queued save and restore so neither can resurrect a credential', async () => {
+  const {Vault,Zip}=setup(); const f=browserFixture(), vault=new Vault(f.opts); await vault.save(Zip.pack(KEY,webcrypto));
+  const saving=vault.save(Zip.pack(KEY+'_new',webcrypto)), restoring=vault.restore(), forgetting=vault.forget();
+  assert.equal(await saving,false); assert.equal(await restoring,null); await forgetting;
+  assert.equal(await vault.restore(),null); assert.equal(f.localValues.size,0);
+});
+
+test('forget works without IndexedDB; cleanup failures remain explicit after portable deletion', async t => {
+  const {Vault,Zip}=setup();
+  for (const mode of ['absent','blocked','session','persistent']) await t.test(mode,async () => {
+    const f=browserFixture(); await saveLegacy(f,KEY); await new Vault(f.opts).save(Zip.pack(KEY,webcrypto));
+    if (mode==='absent') f.opts.indexedDB=null;
+    if (mode==='blocked') f.opts.indexedDB={open() { throw new Error(KEY); }};
+    if (mode==='session') f.opts.sessionStorage={removeItem() { throw new Error(KEY); }};
+    if (mode==='persistent') f.opts.localStorage={...f.localStorage,removeItem() {}};
+    const vault=new Vault(f.opts);
+    if (mode==='absent') await vault.forget();
+    else await assert.rejects(vault.forget(),e => /did not remove all saved copies/.test(e.message) && !e.message.includes(KEY));
+    assert.equal(f.localValues.has(PORTABLE_NAME),mode==='persistent');
+    if (mode!=='persistent') assert.equal(await vault.restore(),null);
+  });
+});
+
+test('forget reports denied obsolete-store getters instead of claiming complete cleanup', async t => {
+  for (const capability of ['indexedDB','sessionStorage']) await t.test(capability,async () => {
+    const globals={}; Object.defineProperty(globals,capability,{get() { throw new Error(KEY); }});
+    const {Vault,Zip}=setup(undefined,globals); const f=browserFixture();
+    const vault=new Vault({...f.opts,[capability]:undefined}); await vault.save(Zip.pack(KEY,webcrypto));
+    await assert.rejects(vault.forget(),e => /did not remove all saved copies/.test(e.message) && !e.message.includes(KEY));
+    assert.equal(f.localValues.size,0); assert.equal(await vault.restore(),null);
+  });
+});
+
+test('transient localStorage failure can be retried without changing the saved bytes', async () => {
+  const {Vault,Zip}=setup(); const f=browserFixture(); const archive=Zip.pack(KEY,webcrypto);
+  await new Vault(f.opts).save(archive); let blocked=true;
+  const localStorage={...f.localStorage,getItem(name) { if (blocked) throw new Error(KEY); return f.localStorage.getItem(name); }};
+  const vault=new Vault({...f.opts,localStorage});
+  await assert.rejects(vault.restore(),/Saved connection status could not be checked/); blocked=false;
+  assert.deepEqual((await vault.restore()).archive,archive);
+});
+
+test('HTTPS and page namespace checks remain, without treating path scope as same-origin isolation', async () => {
+  const {Vault,Zip}=setup(); const f=browserFixture();
+  assert.throws(() => new Vault({...f.opts,location:{href:'http://example.invalid/molt/'}}),/HTTPS/);
+  await new Vault(f.opts).save(Zip.pack(KEY,webcrypto));
+  assert.equal(await new Vault({...f.opts,location:{href:'https://c933103.github.io/another/'}}).restore(),null);
+  assert.equal((await new Vault(f.opts).restore()).key,KEY);
+});
+
+test('external ZIP restores authentication after loss of every browser store', async () => {
+  let authorization; const {Vault,Zip,session}=setup(async (_,opts) => { authorization=opts.headers.Authorization; return response(); });
+  const f=browserFixture(), archive=session.recoveryArchive(webcrypto); await new Vault(f.opts).save(archive);
+  session.disconnect(); f.localValues.clear(); f.keys.clear(); f.sessionValues.clear(); f.setCookie('');
+  const key=await Zip.importArchive(archive); session.connect(key,archive); await session.request('me');
+  const vault=new Vault({...f.opts,indexedDB:null}); await vault.save(session.recoveryArchive({}));
+  assert.equal(authorization,'Bearer '+KEY); assert.equal((await vault.restore()).key,KEY);
+  assert.deepEqual(Buffer.from(f.localValues.get(PORTABLE_NAME),'base64'),Buffer.from(archive));
+  assert.equal(JSON.stringify(session).includes(KEY),false);
 });
 
 test('ZIP parser rejects malformed, oversized, damaged and path-bearing archives', () => {
@@ -338,181 +411,6 @@ test('ZIP parser rejects malformed, oversized, damaged and path-bearing archives
     const bad = archive.slice(); bad[offset] ^= 255; assert.throws(() => Zip.unpack(bad));
   }
 });
-
-test('empty readable storage reports no saved connection without writes or requests', async () => {
-  let calls = 0;
-  const {Vault} = setup(() => { calls++; throw new Error('Unexpected network request'); });
-  const f = browserFixture();
-  assert.equal(await new Vault(f.opts).restore(),null);
-  assert.equal(f.keys.size,0); assert.equal(f.writes.length,0); assert.equal(f.sessionValues.size,0); assert.equal(calls,0);
-});
-
-test('unavailable storage and crypto do not claim a saved credential exists or is damaged', async t => {
-  const cases = [
-    ['absent IndexedDB', f => { f.opts.indexedDB = null; }, /Browser credential storage is unavailable/],
-    ['throwing IndexedDB', f => { f.opts.indexedDB = {open() { throw new Error(KEY); }}; }, /Browser credential storage is unavailable/],
-    ['failed IndexedDB open', f => { f.opts.indexedDB = {open() { const req={}; setImmediate(() => req.onerror?.({message:KEY})); return req; }}; }, /Browser credential storage is unavailable/],
-    ['blocked IndexedDB open', f => { f.opts.indexedDB = {open() { const req={}; setImmediate(() => req.onblocked?.({message:KEY})); return req; }}; }, /Browser credential storage is unavailable/],
-    ['unavailable Web Crypto', f => { f.opts.crypto = {}; }, /Web Crypto is unavailable/],
-    ['inaccessible cookie', f => { f.opts.document = {get cookie() { throw new Error(KEY); }}; }, /Browser credential storage is unavailable/]
-  ];
-  for (const [name,change,pattern] of cases) await t.test(name,async () => {
-    let calls = 0;
-    const {Vault} = setup(() => { calls++; throw new Error('Unexpected network request'); });
-    const f = browserFixture(); change(f);
-    await assert.rejects(new Vault(f.opts).restore(),err => {
-      assert.match(err.message,pattern);
-      assert.match(err.message,/Saved connection status could not be checked/);
-      assert.match(err.message,/saved copies were not removed/i);
-      assert.doesNotMatch(err.message,/saved credential could not be restored|Connect again|disconnect to remove/i);
-      assert.equal(err.message.includes(KEY),false);
-      return true;
-    });
-    assert.equal(f.keys.size,0); assert.equal(f.writes.length,0); assert.equal(f.sessionValues.size,0); assert.equal(calls,0);
-  });
-});
-
-async function rejectsRestoreWithoutChangingCopies(Vault,f,pattern) {
-  const keys = [...f.keys], session = [...f.sessionValues], cookie = f.doc.cookie, writes = [...f.writes];
-  const forbidden = [KEY,...keys.map(([,value]) => value).filter(value => typeof value === 'string'),...session.map(([,value]) => value)];
-  await assert.rejects(new Vault(f.opts).restore(),err => {
-    assert.equal(err.name,'ClientError');
-    assert.match(err.message,pattern); assert.match(err.message,/saved copies were not removed/i);
-    for (const value of forbidden) if (value) assert.equal(err.message.includes(value),false);
-    return true;
-  });
-  assert.deepEqual([...f.keys],keys); assert.deepEqual([...f.sessionValues],session);
-  assert.equal(f.doc.cookie,cookie); assert.deepEqual(f.writes,writes);
-}
-
-test('unreadable session storage is not treated as absent when no other token can be read', async t => {
-  for (const missing of [false,true]) await t.test(missing ? 'unavailable session API' : 'denied session read',async () => {
-    const {Vault} = setup(); const f = browserFixture(); await new Vault(f.opts).save(KEY);
-    f.keys.delete('https://c933103.github.io/molt/|ciphertext'); f.setCookie('');
-    f.opts.sessionStorage = missing ? null : {
-      getItem() { throw new Error(KEY); },
-      setItem() { throw new Error(KEY); },
-      removeItem() { throw new Error(KEY); }
-    };
-    await rejectsRestoreWithoutChangingCopies(Vault,f,/Browser credential storage is unavailable/);
-  });
-});
-
-test('unreadable session storage still allows the existing cookie fallback', async () => {
-  const {Vault} = setup(); const f = browserFixture(); await new Vault(f.opts).save(KEY);
-  f.keys.delete('https://c933103.github.io/molt/|ciphertext');
-  const cookie = f.doc.cookie, writes = [...f.writes], session = [...f.sessionValues];
-  f.opts.sessionStorage = {getItem() { throw new Error(KEY); },setItem() { throw new Error(KEY); }};
-  assert.equal(await new Vault(f.opts).restore(),KEY);
-  assert.equal(f.doc.cookie,cookie); assert.deepEqual(f.writes,writes); assert.deepEqual([...f.sessionValues],session);
-});
-
-test('conflicting cookies receive cleanup guidance without disclosing or removing copies', async () => {
-  const {Vault} = setup(); const f = browserFixture(); await new Vault(f.opts).save(KEY);
-  const cookie = f.doc.cookie;
-  f.keys.delete('https://c933103.github.io/molt/|ciphertext'); f.sessionValues.clear();
-  f.setCookie(cookie + '; ' + cookie);
-  await rejectsRestoreWithoutChangingCopies(Vault,f,/Conflicting saved credential cookies.*Forget saved key.*clear this site's cookies and storage/);
-  await assert.rejects(new Vault(f.opts).restore(),err => {
-    assert.doesNotMatch(err.message,/storage is unavailable|Reload to retry/);
-    return true;
-  });
-});
-
-test('conflicting cookies do not override an existing backup or session token', async () => {
-  const {Vault} = setup(); const f = browserFixture(); await new Vault(f.opts).save(KEY);
-  const cookie = f.doc.cookie; f.setCookie(cookie + '; ' + cookie);
-  assert.equal(await new Vault(f.opts).restore(),KEY);
-  f.keys.delete('https://c933103.github.io/molt/|ciphertext');
-  assert.equal(await new Vault(f.opts).restore(),KEY);
-  assert.equal(f.doc.cookie,cookie + '; ' + cookie);
-});
-
-test('restore distinguishes missing and invalid wrapping keys while retaining every copy', async t => {
-  const scope = 'https://c933103.github.io/molt/';
-  for (const invalid of [false,true]) await t.test(invalid ? 'invalid key' : 'missing key',async () => {
-    const {Vault} = setup(); const f = browserFixture(); await new Vault(f.opts).save(KEY);
-    if (invalid) f.keys.set(scope,{extractable:true}); else f.keys.delete(scope);
-    await rejectsRestoreWithoutChangingCopies(Vault,f,invalid ? /encryption key is invalid/ : /encryption key is missing/);
-  });
-});
-
-test('restore distinguishes malformed records, decryption failures and invalid ZIP contents', async t => {
-  const scope = 'https://c933103.github.io/molt/';
-  for (const stage of ['record','decryption','contents']) await t.test(stage,async () => {
-    let calls = 0;
-    const {Vault} = setup(() => { calls++; throw new Error('Unexpected network request'); });
-    const f = browserFixture(); await new Vault(f.opts).save(KEY);
-    if (stage === 'record') f.keys.set(scope + '|ciphertext','invalid-envelope-' + KEY);
-    if (stage === 'decryption') {
-      f.opts.crypto = {subtle:{decrypt() { throw new Error(KEY + f.keys.get(scope + '|ciphertext')); }}};
-    }
-    if (stage === 'contents') {
-      const iv = webcrypto.getRandomValues(new Uint8Array(12));
-      const ciphertext = await webcrypto.subtle.encrypt({name:'AES-GCM',iv,additionalData:new TextEncoder().encode('Moltbook browser desk v2|' + scope),tagLength:128},f.keys.get(scope),new Uint8Array(200));
-      f.keys.set(scope + '|ciphertext','v2.' + Buffer.concat([Buffer.from(iv),Buffer.from(ciphertext)]).toString('base64url'));
-    }
-    const expected = {record:/encrypted record is invalid/,decryption:/decryption failed/,contents:/decrypted contents failed validation/}[stage];
-    await rejectsRestoreWithoutChangingCopies(Vault,f,expected);
-    assert.equal(calls,0);
-  });
-});
-
-test('legacy migration failure is reported without renewing or removing the saved copies', async () => {
-  const {Vault} = setup(); const f = browserFixture(); const scope = 'https://c933103.github.io/molt/';
-  const key = await webcrypto.subtle.generateKey({name:'AES-GCM',length:256},false,['encrypt','decrypt']);
-  const iv = webcrypto.getRandomValues(new Uint8Array(12));
-  const ciphertext = await webcrypto.subtle.encrypt({name:'AES-GCM',iv,additionalData:new TextEncoder().encode('Moltbook browser desk v1|' + scope),tagLength:128},key,new TextEncoder().encode(JSON.stringify({key:KEY})));
-  const token = 'v1.' + Buffer.concat([Buffer.from(iv),Buffer.from(ciphertext)]).toString('base64url');
-  f.keys.set(scope,key); f.keys.set(scope + '|ciphertext',token); f.setCookie('__Secure-moltbook-desk-v1=' + token);
-  f.opts.crypto = {
-    getRandomValues:bytes => webcrypto.getRandomValues(bytes),
-    subtle:{decrypt:(...args) => webcrypto.subtle.decrypt(...args), encrypt() { throw new Error(KEY + token); }}
-  };
-  await rejectsRestoreWithoutChangingCopies(Vault,f,/storage upgrade could not be completed/);
-});
-
-test('a transient storage failure can be retried with the existing saved copies', async () => {
-  const {Vault} = setup(); const f = browserFixture(); await new Vault(f.opts).save(KEY);
-  const working = f.opts.indexedDB; let blocked = true;
-  f.opts.indexedDB = {open(...args) { if (blocked) throw new Error(KEY); return working.open(...args); }};
-  const vault = new Vault(f.opts);
-  await rejectsRestoreWithoutChangingCopies(Vault,f,/Browser credential storage is unavailable/);
-  await assert.rejects(vault.restore(),/Browser credential storage is unavailable/);
-  blocked = false;
-  assert.equal(await vault.restore(),KEY);
-});
-
-test('disconnect still cancels a pending restore instead of surfacing a stale diagnostic', async () => {
-  const {Vault} = setup(); const f = browserFixture(); await new Vault(f.opts).save(KEY);
-  const working = f.opts.indexedDB; let failedOpen, pendingOpen = true;
-  f.opts.indexedDB = {open(...args) {
-    if (!pendingOpen) return working.open(...args);
-    pendingOpen = false; failedOpen = {}; return failedOpen;
-  }};
-  const vault = new Vault(f.opts); const restoring = vault.restore();
-  await new Promise(resolve => setImmediate(resolve));
-  const forgetting = vault.forget(); failedOpen.onerror();
-  assert.equal(await restoring,null); await forgetting;
-  assert.equal(f.keys.size,0); assert.equal(f.doc.cookie,''); assert.equal(f.sessionValues.size,0);
-});
-
-test('external recovery archive restores authentication after every browser-stored copy is removed', async () => {
-  let authorization;
-  const {Vault,Zip,session} = setup(async (_,opts) => { authorization=opts.headers.Authorization; return response(); });
-  const f = browserFixture(), vault = new Vault(f.opts); await vault.save(KEY);
-  const portable = session.recoveryArchive(webcrypto);
-  session.disconnect(); await vault.forget();
-  assert.equal(f.doc.cookie,''); assert.equal(f.sessionValues.size,0); assert.equal(f.keys.size,0);
-  assert.throws(() => session.recoveryArchive(webcrypto),/Connect this browser/);
-  const recovered = Zip.unpack(portable,'123');
-  session.connect(recovered); await session.request('me'); await new Vault(f.opts).save(recovered);
-  assert.equal(authorization,'Bearer ' + KEY);
-  assert.equal(await new Vault(f.opts).restore(),KEY);
-  assert.equal(JSON.stringify(session).includes(KEY),false);
-});
-
-
 
 test('comment upvote uses only the exact comment endpoint and rejects malformed IDs before sending', async () => {
   const calls=[]; const {session,operation}=setup(async (...args) => { calls.push(args); return response({success:true,action:'added'}); });

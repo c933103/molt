@@ -14,7 +14,7 @@ Read [README.md](README.md), the credential/content boundaries and [Pages workfl
 
 ## Client contracts and verification
 
-- Preserve credential destination restrictions, encrypted browser-storage behavior, bounded recovery import/export, key redaction, disconnect races, loopback/exact-page CLI binding and explicit mutation confirmation. Recovery format fixtures and migration fixtures protect real compatibility and must remain.
+- Preserve credential destination restrictions, portable password-protected ZIP browser storage, bounded recovery import/export, key redaction, disconnect races, loopback/exact-page CLI binding and explicit mutation confirmation. Preserve bounded recovery ZIP fixtures and negative controls proving obsolete AES records are never restored or migrated. Obsolete stores may be accessed only for deletion during explicit Forget; do not add a browser-held wrapping key or fallback.
 - Use synthetic keys and controlled responses. Do not read real credentials, connect accounts, publish, vote, delete or perform other live mutations to validate a change. Unknown mutation outcomes require reconciliation rather than automatic retry.
 - For code changes, run `node --test tests/*.test.mjs` and `python3 check_html4.py`; regenerate the embedded script policy with `python3 update_csp.py` when the script changes, then check the resulting diff and rerun relevant tests. CSP hashes bind executable content and are not obsolete historical-source gates.
 - The Pages workflow stages only `index.html` and `cli.mjs`; root guidance, tests and archives are not deployed. Git source archives still include root documentation. Preserve this explicit deployment boundary.
