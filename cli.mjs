@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 import {createReadStream} from 'node:fs';
-import {stat} from 'node:fs/promises';
+import {stat, open} from 'node:fs/promises';
+import {createHash} from 'node:crypto';
+import {join} from 'node:path';
 import {pathToFileURL} from 'node:url';
 
 export const DEFAULT_PAGE = 'https://c933103.github.io/molt/';
@@ -9,6 +11,7 @@ const COMMANDS = {
   connection:[], me:[], status:[], home:[],
   posts:['sort','community','cursor','limit'], feed:['sort','cursor','limit','filter'], search:['query','cursor','limit','type'],
   post:['id'], comments:['id','cursor','sort','limit'], publish:['community','title','content-file','type','url'],
+  'publish-verified':['community','title','content-file','expected-account','approve-post-and-challenge','attempt-dir'],
   comment:['id','parent-id','content-file'], upvote:['id'], downvote:['id'], verify:['code','answer'],
   'comment-downvote':['id','post-id','confirm-id','expected-vote','confirm-repeat'], 'comment-remove-upvote':['id','post-id','confirm-id'], 'comment-upvote':['id','post-id'], 'comment-readback':['id','cursor'],
   profile:['name'], submolts:[], follow:['name','confirm-target'], unfollow:['name','confirm-target'],
@@ -31,6 +34,7 @@ node cli.mjs search --query "agent memory"
 node cli.mjs post --id POST_ID
 node cli.mjs comments --id POST_ID
 node cli.mjs publish --community general --title "Title" --content-file post.txt
+node cli.mjs publish-verified --community politics --title "Title" --content-file post.txt --expected-account ACCOUNT_ID --approve-post-and-challenge yes --attempt-dir ./molt-attempts
 node cli.mjs comment --id POST_ID --content-file reply.txt [--parent-id COMMENT_ID]
 node cli.mjs upvote --id POST_ID
 node cli.mjs comment-readback --id POST_ID
@@ -98,7 +102,7 @@ export function parseArgs(args) {
   }
   const endpoint = loopbackEndpoint(opts.cdp);
   const page = pageURL(opts.page);
-  const action = ALIASES[command] || (command === 'publish' ? 'createPost' : command === 'delete' ? 'deletePost' : command === 'comment-downvote' ? 'commentDownvote' : command === 'comment-remove-upvote' ? 'commentRemoveUpvote' : command === 'comment-upvote' ? 'commentUpvote' : command === 'comment-readback' ? 'commentReadback' : command);
+  const action = ALIASES[command] || (['publish','publish-verified'].includes(command) ? 'createPost' : command === 'delete' ? 'deletePost' : command === 'comment-downvote' ? 'commentDownvote' : command === 'comment-remove-upvote' ? 'commentRemoveUpvote' : command === 'comment-upvote' ? 'commentUpvote' : command === 'comment-readback' ? 'commentReadback' : command);
   const params = {};
   if (['posts','feed'].includes(action)) params.sort = opts.sort || 'new';
   if (opts.limit) params.limit = opts.limit;
@@ -129,7 +133,7 @@ export function parseArgs(args) {
   if (opts['parent-id']) params.parent_id = opts['parent-id'];
   if (opts.code) params.code = opts.code;
   if (opts.answer) params.answer = opts.answer;
-  const required = {profile:['name'],follow:['name','confirm-target'],unfollow:['name','confirm-target'],'notifications-read':['confirm-target'],'dm-conversation':['id'],'dm-messages':['id'],'dm-send':['id','message-file','confirm-target'],'dm-new':['name','message-file','confirm-target'],search:['query'],post:['id'],comments:['id'],'comment-downvote':['id','post-id','confirm-id'], 'comment-remove-upvote':['id','post-id','confirm-id'],'comment-upvote':['id'],'comment-readback':['id'],publish:['community','title','content-file'],comment:['id','content-file'],upvote:['id'],downvote:['id'],verify:['code','answer'],delete:['id','confirm-id']}[command] || [];
+  const required = {profile:['name'],follow:['name','confirm-target'],unfollow:['name','confirm-target'],'notifications-read':['confirm-target'],'dm-conversation':['id'],'dm-messages':['id'],'dm-send':['id','message-file','confirm-target'],'dm-new':['name','message-file','confirm-target'],search:['query'],post:['id'],comments:['id'],'comment-downvote':['id','post-id','confirm-id'], 'comment-remove-upvote':['id','post-id','confirm-id'],'comment-upvote':['id'],'comment-readback':['id'],publish:['community','title','content-file'],'publish-verified':['community','title','content-file','expected-account','approve-post-and-challenge','attempt-dir'],comment:['id','content-file'],upvote:['id'],downvote:['id'],verify:['code','answer'],delete:['id','confirm-id']}[command] || [];
   for (const name of required) if (!opts[name]) throw new Error('Required option: --' + name);
   if (['comment-remove-upvote','comment-downvote'].includes(command) && opts.id !== opts['confirm-id']) throw new Error('Confirm the vote change with the same comment ID in --id and --confirm-id.');
   if (command === 'delete' && opts.id !== opts['confirm-id']) throw new Error('Confirm deletion with the same post ID in --id and --confirm-id.');
@@ -137,7 +141,8 @@ export function parseArgs(args) {
     const target = command === 'notifications-read' ? 'all' : command === 'dm-send' ? opts.id : opts.name;
     if (opts['confirm-target'] !== target) throw new Error('Confirm the exact target with --confirm-target.');
   }
-  return {action, params, endpoint, page, tab:opts.tab, contentFile:opts['content-file'], ...(opts['message-file'] ? {messageFile:opts['message-file']} : {})};
+  if (command === 'publish-verified' && opts['approve-post-and-challenge'] !== 'yes') throw new Error('Explicit post and challenge approval must be yes.');
+  return {...(command === 'publish-verified' ? {verifiedPublish:{account:opts['expected-account'],directory:opts['attempt-dir'],approved:true}} : {}),action, params, endpoint, page, tab:opts.tab, contentFile:opts['content-file'], ...(opts['message-file'] ? {messageFile:opts['message-file']} : {})};
 }
 async function readContent(path) {
   if (path !== '-') { const info = await stat(path); if (!info.isFile() || info.size > 180000) throw new Error('Content must be a regular file under 180,000 bytes.'); }
@@ -218,12 +223,101 @@ export async function executeBrowser(request, {fetchImpl = fetch, WebSocketImpl 
     ws.addEventListener('close', () => { if (!settled) finish(new Error('The browser closed the operation connection.')); });
   });
 }
+// Deliberately narrow, non-evaluating solver. Unsupported prose is never guessed.
+export function solvePostingChallenge(text) {
+  if (typeof text !== 'string' || text.length > 2000) return null;
+  const small = ['zero','one','two','three','four','five','six','seven','eight','nine','ten','eleven','twelve','thirteen','fourteen','fifteen','sixteen','seventeen','eighteen','nineteen'];
+  const tens = ['','','twenty','thirty','forty','fifty','sixty','seventy','eighty','ninety'];
+  const numbers = new Map(small.map((word,n) => [word,n]));
+  for (let n=20;n<100;n++) numbers.set(tens[Math.floor(n/10)] + (n%10 ? small[n%10] : ''),n);
+  const n = [...numbers.keys()].sort((a,b)=>b.length-a.length).join('|');
+  // Preserve arithmetic signs: a minus before a quantity must not become addition.
+  const compact = text.toLowerCase().replace(/[^a-z+−×÷*/%^ -]/g,'').replace(/ /g,'').replace('st-er','ster').replace('total-force','totalforce');
+  const force = new RegExp('^al+o+b+s+t+e+r+uses\\^?its/?clawto\\^?exert(' + n + ')(?:newtons|neootons)andits/?antennaadds\\^?(' + n + ')(?:newtons|neootons)(?:um)?what\\^?isthe/?totalforce$');
+  const match = compact.match(force);
+  // Reject numeric digits rather than silently stripping contradictory quantities.
+  if (match && !/\p{N}/u.test(text)) return (numbers.get(match[1])+numbers.get(match[2])).toFixed(2);
+  return null;
+}
+
+export async function publishVerified(request, {execute = executeBrowser, now = Date.now} = {}) {
+  const config = request.verifiedPublish;
+  if (!config?.approved || !/^[a-zA-Z0-9_-]{1,100}$/.test(config.account || '') || !config.directory) throw new Error('Explicit approval, expected account and an attempt directory are required.');
+  const params = {...request.params};
+  if (!params.submolt || !params.title || typeof params.content !== 'string' || !params.content.trim()) throw new Error('Prepare the complete post before starting verification.');
+  const send = (action,p={}) => execute({...request,verifiedPublish:undefined,action,params:p});
+  const connection = await send('connection');
+  if (!connection.ok || !connection.data?.connected || connection.data.busy || typeof connection.data.token !== 'string') throw new Error('An idle connected page with sequence pinning is required.');
+  const token = connection.data.token;
+  const invoke = (action,p={}) => send(action,{...p,connection_token:token});
+  const profile = await invoke('me');
+  if (!profile.ok || profile.data?.agent?.id !== config.account) throw new Error('The connected account does not match the approved account.');
+  const fingerprint = createHash('sha256').update(JSON.stringify([request.page.href,config.account,params.submolt,params.title,params.content])).digest('hex');
+  if (!(await stat(config.directory)).isDirectory()) throw new Error('Prepare an existing stable attempt directory before publication.');
+  let journal;
+  try { journal = await open(join(config.directory,fingerprint+'.jsonl'),'wx',0o600); }
+  catch (err) { if (err.code === 'EEXIST') return {ok:false,error:'This exact post already has an attempt record. Reconcile the existing operation; no create was sent.',unknownOutcome:true}; throw err; }
+  // Persist the new filename as well as its contents before any mutation.
+  try {
+    const directory = await open(config.directory,'r');
+    try { await directory.sync(); } finally { await directory.close(); }
+  } catch { await journal.close(); throw new Error('Cannot durably save the attempt claim; no post was sent.'); }
+  const receipt = {fingerprint,account:config.account,stage:'prepared'};
+  const record = async stage => { receipt.stage=stage; await journal.write(JSON.stringify({...receipt,at:new Date(now()).toISOString()})+'\n'); await journal.sync(); };
+  let mayHaveCreated = false;
+  try {
+    // Persist BEFORE dispatch, including a crash or unknown response.
+    await record('create-started'); mayHaveCreated=true;
+    const created = await invoke('createPost',params);
+    if (!created.ok) { await record('create-unresolved'); return {ok:false,error:'Creation did not return a confirmed result. Reconcile before any retry.',unknownOutcome:true,receipt}; }
+    const data=created.data, post=data?.post;
+    if (typeof post?.id !== 'string' || !/^[a-zA-Z0-9_-]{1,100}$/.test(post.id)) throw new Error('Creation returned no valid post ID.');
+    receipt.post_id=post.id; await record('created');
+    if (data.already_existed || post.already_existed) { await record('existing-post-returned'); return {ok:false,error:'The service returned an existing post. No challenge was submitted; reconcile that object.',receipt}; }
+    if (post.author_id!==config.account || post.title!==params.title || post.content!==params.content || post.submolt?.name!==params.submolt) {
+      await record('creation-mismatch');
+      return {ok:false,error:'The created object does not match the approved account, content and community. No verification sent.',receipt};
+    }
+    const challenge=data.verification || post.verification;
+    let verifiedResponse=false;
+    if (challenge) {
+      const deadline=Date.parse(challenge.expires_at);
+      const answer=solvePostingChallenge(challenge.challenge_text);
+      if (!Number.isFinite(deadline) || deadline-now()<10000 || deadline-now()>600000 || answer===null || typeof challenge.verification_code !== 'string' || challenge.verification_code.length>256) {
+        await record('challenge-needs-attention');
+        return {ok:false,error:'Challenge unsupported, invalid or near expiry. Continue only on this existing post; never recreate automatically.',receipt};
+      }
+      await record('verify-started');
+      // Time spent syncing is included in the expiry guard.
+      if (deadline-now()<10000) { await record('challenge-expired'); return {ok:false,error:'Too little time remains to submit. No verification sent.',receipt}; }
+      try {
+        const checked=await invoke('verify',{code:challenge.verification_code,answer});
+        verifiedResponse=checked.ok && checked.data?.success===true && checked.data?.content_id===post.id && checked.data?.content_type==='post';
+      } catch { /* Unknown verification outcome: read back; do not resubmit. */ }
+    }
+    const read=await invoke('post',{id:post.id});
+    const observed=read.ok ? read.data?.post : null;
+    const same = observed?.id===post.id && observed.author_id===config.account && observed.title===params.title && observed.content===params.content && observed.is_deleted===false && observed.submolt?.name===params.submolt;
+    let visible=false;
+    if (same && observed.verification_status==='pending' && verifiedResponse) {
+      const feed=await invoke('posts',{sort:'new',submolt:params.submolt,limit:100});
+      visible=feed.ok && Array.isArray(feed.data?.posts) && feed.data.posts.some(p=>p.id===post.id);
+    }
+    const published=same && (observed.verification_status==='verified' || visible);
+    await record(published ? (visible?'published-feed-confirmed':'published-status-confirmed') : 'publication-unresolved');
+    return published ? {ok:true,data:{...receipt,verification_status:observed.verification_status,feed_visible:visible}} : {ok:false,error:'Publication is not independently confirmed. Reconcile this post; no automatic retry.',unknownOutcome:true,receipt};
+  } catch {
+    // Never print raw exceptions or response objects that could contain a challenge token.
+    return {ok:false,error:'The publication sequence stopped. Inspect the attempt record and reconcile before retrying.',unknownOutcome:mayHaveCreated,receipt};
+  } finally { await journal.close(); }
+}
+
 export async function main(args = process.argv.slice(2)) {
   const request = parseArgs(args); if (request.help) { process.stdout.write(HELP); return; }
   if (typeof WebSocket !== 'function') throw new Error('Use Node.js 22.4 or newer.');
   if (request.contentFile) request.params.content = await readContent(request.contentFile);
   if (request.messageFile) request.params.message = await readContent(request.messageFile);
-  const result = await executeBrowser(request);
+  const result = request.verifiedPublish ? await publishVerified(request) : await executeBrowser(request);
   if (!result.ok) {
     if (result.receipt) process.stderr.write(JSON.stringify(result.receipt,null,2) + '\n');
     throw new Error(String(result.error || 'The browser request failed.') + (result.unknownOutcome ? ' Check the account before retrying.' : ''));

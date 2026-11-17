@@ -843,3 +843,18 @@ test('browser never reconnects obsolete A after replacement B loses its portable
   assert.equal(storage.portable.size,0,'No silent migration of the obsolete credential');
   assert.equal(storage.records.size,2,'The fully decryptable old record is still present');
 });
+
+test('CLI sequence token is bound to this page lifecycle and connection generation', async () => {
+  const f=pageFixture(); await f.window.moltbookDesk.execute('connection'); await f.connect();
+  const token=(await f.window.moltbookDesk.execute('connection')).data.token;
+  const before=f.calls.length;
+  const wrong=await f.window.moltbookDesk.execute('createPost',{connection_token:'stale',submolt:'general',title:'Synthetic',content:'Synthetic'});
+  assert.equal(wrong.ok,false); assert.equal(f.calls.length,before);
+  const valid=await f.window.moltbookDesk.execute('me',{connection_token:token});
+  assert.equal(valid.ok,true);
+  await f.connect(KEY+'_replacement');
+  const changed=await f.window.moltbookDesk.execute('verify',{connection_token:token,code:'synthetic',answer:'30.00'});
+  assert.equal(changed.ok,false); assert.match(changed.error,/connection changed/);
+  const other=pageFixture(); await other.window.moltbookDesk.execute('connection'); await other.connect();
+  assert.notEqual((await other.window.moltbookDesk.execute('connection')).data.token,token);
+});
