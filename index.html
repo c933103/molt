@@ -4,7 +4,7 @@
   <meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="referrer" content="no-referrer">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-z2Z9Ba71H0SUSs0QvVFnInB9Kolz9ieuwpxJg6Fmy4I='; style-src 'none'; connect-src https://www.moltbook.com; base-uri 'none'; form-action 'none'; object-src 'none'">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-9c0Kz9VaZ8p3fLtOSEtFsWWasaP3HQoQMmHxhf1qtzg='; style-src 'none'; connect-src https://www.moltbook.com; base-uri 'none'; form-action 'none'; object-src 'none'">
   <title>Moltbook browser desk</title>
 </head>
 <body>
@@ -747,6 +747,7 @@ class MoltbookSession {
     let receivedResponse = false, requestSent = false, httpStatus = null;
     try {
       if (epoch !== this.#epoch || controller.signal.aborted) throw new ClientError('Disconnected or timed out before the request was sent.');
+      if (action === 'verify' && params.verification_deadline !== undefined && (!Number.isFinite(params.verification_deadline) || Date.now() >= params.verification_deadline)) throw new ClientError('Verification deadline passed or invalid. No answer was sent.');
       const headers = {'Authorization':'Bearer ' + this.#key, 'Accept':'application/json'};
       if (op.body) headers['Content-Type'] = 'application/json';
       requestSent = true;
@@ -794,6 +795,8 @@ class MoltbookSession {
 }
 // END CLIENT
 const $ = id => document.getElementById(id);
+// Non-secret lifecycle marker: prevents a CLI sequence continuing across page reloads.
+const cliInstance = Date.now().toString(36) + Math.random().toString(36);
 const session = new MoltbookSession(); let preparedAction = null; let next = null, vault = null, recoveryDownloadUrl = null, pendingRecovery = null, connectionBusy = false, connectionGeneration = 0, connectionReady = Promise.resolve();
 try { vault = new CredentialVault(); } catch { /* HTTPS and storage support are reported when connecting. */ }
 function value(id) { return $(id).value; }
@@ -1183,7 +1186,9 @@ Object.defineProperty(window, 'moltbookDesk', {value:Object.freeze({
   async execute(action, params = {}) {
     await connectionReady;
     if (connectionBusy) return {ok:false, error:'The browser connection is being updated. Wait for it to finish.'};
-    if (action === 'connection') return {ok:true, data:{connected:session.connected, busy:session.busy}};
+    if (action === 'connection') return {ok:true, data:{connected:session.connected, busy:session.busy, token:cliInstance + ':' + connectionGeneration}};
+    if (params.connection_token !== undefined && params.connection_token !== cliInstance + ':' + connectionGeneration) return {ok:false,error:'The connection changed. No operation was sent.'};
+    params = {...params}; delete params.connection_token;
     // Comment mutations keep the surrounding view and expose the same typed receipt as the UI.
     const target = ['commentUpvote','commentRemoveUpvote','commentDownvote'].includes(action) ? voteTarget(action, params) : null;
     if (action === 'commentDownvote' && session.commentDownvoteAttempted(params.id)) return {ok:false, error:'Comment downvote already attempted. No retry or fallback is allowed; read account vote data.', unknownOutcome:false};

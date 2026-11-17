@@ -843,3 +843,31 @@ test('browser never reconnects obsolete A after replacement B loses its portable
   assert.equal(storage.portable.size,0,'No silent migration of the obsolete credential');
   assert.equal(storage.records.size,2,'The fully decryptable old record is still present');
 });
+
+test('CLI sequence token is bound to this page lifecycle and connection generation', async () => {
+  const f=pageFixture(); await f.window.moltbookDesk.execute('connection'); await f.connect();
+  const token=(await f.window.moltbookDesk.execute('connection')).data.token;
+  const before=f.calls.length;
+  const wrong=await f.window.moltbookDesk.execute('createPost',{connection_token:'stale',submolt:'general',title:'Synthetic',content:'Synthetic'});
+  assert.equal(wrong.ok,false); assert.equal(f.calls.length,before);
+  const valid=await f.window.moltbookDesk.execute('me',{connection_token:token});
+  assert.equal(valid.ok,true);
+  await f.connect(KEY+'_replacement');
+  const changed=await f.window.moltbookDesk.execute('verify',{connection_token:token,code:'synthetic',answer:'30.00'});
+  assert.equal(changed.ok,false); assert.match(changed.error,/connection changed/);
+  const other=pageFixture(); await other.window.moltbookDesk.execute('connection'); await other.connect();
+  assert.notEqual((await other.window.moltbookDesk.execute('connection')).data.token,token);
+});
+
+test('verification rechecks expiry at browser dispatch after local setup delays', async () => {
+  const f=pageFixture(); await f.window.moltbookDesk.execute('connection'); await f.connect();
+  const token=(await f.window.moltbookDesk.execute('connection')).data.token;
+  const before=f.calls.length;
+  for(const deadline of [Date.now()-1,NaN,'2099-01-01']) {
+    const r=await f.window.moltbookDesk.execute('verify',{connection_token:token,code:'synthetic',answer:'30.00',verification_deadline:deadline});
+    assert.equal(r.ok,false); assert.match(r.error,/deadline/); assert.equal(f.calls.length,before);
+  }
+  const valid=await f.window.moltbookDesk.execute('verify',{connection_token:token,code:'synthetic',answer:'30.00',verification_deadline:Date.now()+10000});
+  assert.equal(valid.ok,true); assert.equal(f.calls.length,before+1);
+  assert.doesNotMatch(f.calls.at(-1).options?.body || '',/verification_deadline/);
+});

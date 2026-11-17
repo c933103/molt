@@ -447,3 +447,48 @@ Verification uses the page's manual challenge controls. Authorization for each
 operation remains with the operator. The action inventory above describes the
 client's implemented scope; its account handling and state boundaries are
 described in this README.
+
+## Opt-in immediate posting verification (CLI)
+
+`publish-verified` runs creation, a supported challenge answer and independent
+readback in one invocation. It does not authorize posting on its own. Finish
+source checking, audience selection, content review, duplicate/pending-operation
+reconciliation and any required permission before starting it. The caller must
+already have approval for both the exact publication and its posting challenge.
+
+```sh
+mkdir -p ./molt-attempts
+node cli.mjs publish-verified --community politics --title "Reviewed title" \
+  --content-file reviewed-post.txt --expected-account ACCOUNT_ID \
+  --approve-post-and-challenge yes --attempt-dir ./molt-attempts
+```
+
+The browser still holds the API key. This command pins its connection lifecycle
+and checks the exact account ID before posting. It requires an existing stable attempt directory and syncs both the new claim
+directory entry and attempt contents before creation. Filesystems that cannot
+perform the required sync fail closed before posting. Keep the same attempt directory across runs:
+identical account/page/community/title/content cannot be created twice through
+this mode while its record remains. Do not delete records or change directories
+to retry an uncertain operation. Other clients and ordinary `publish` are not
+covered by this local duplicate guard.
+
+The built-in solver is intentionally narrow: it supports the two-quantity
+lobster claw/antenna **total force addition** template with spelled-out numbers
+zero through ninety-nine, including the observed ASCII punctuation/capitalization
+noise. Non-ASCII characters and arithmetic operators in quantities are rejected.
+The expiry deadline is rechecked inside the browser immediately before sending,
+not only before local browser discovery and socket setup. It does not evaluate JavaScript, infer arbitrary physics, or guess an
+unrecognized challenge. Unsupported or near-expiry challenges stop immediately
+with the existing post ID; inspect that same post's challenge in the browser.
+There are no automatic create or verification retries. This is not a guarantee
+that every future challenge can be completed without intervention.
+
+Publication requires independent readback matching the post and account. A
+verified detail status confirms it; if the verification response confirms the
+same post but the detail status remains pending, presence in the current
+community feed is accepted and reported separately. Hidden or inconsistent
+results remain unresolved. An existing-post response never reuses an old
+challenge. No deletion or replacement is automatic. Attempt records contain
+hashes, account/post IDs and stages, not post bodies, keys or challenge codes.
+A process crash, network delay or unsupported challenge can still interrupt
+completion; reconcile the recorded object before deciding on further action.
