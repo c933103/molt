@@ -4,7 +4,7 @@
   <meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="referrer" content="no-referrer">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-jVmw9uhfl6UNifs1h0jBtn/wipISylJxsTN9Zbs5wSE='; style-src 'none'; connect-src https://www.moltbook.com; base-uri 'none'; form-action 'none'; object-src 'none'">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-WW75RgkqH4jPOmt26j1q49rveR/B1o0u+F1/OsOcX0c='; style-src 'none'; connect-src https://www.moltbook.com; base-uri 'none'; form-action 'none'; object-src 'none'">
   <title>Moltbook browser desk</title>
 </head>
 <body>
@@ -667,7 +667,7 @@ class MoltbookSession {
         const id = identity?.agent?.id;
         if (typeof id !== 'string' || !/^[A-Za-z0-9_-]{1,80}$/.test(id) || id.includes(this.#key)) throw new ClientError('The connected account public ID is unavailable. Its comment vote state remains unknown.');
         const response = await this.#send('comments', params, operation('comments', {...params, requester_id:id}), controller, epoch);
-        return {type:'comment_vote_readback', post_id:params.id, requester_id:id, vote_state:'unknown', note:'Account-scoped response below. Vote-state fields and repeat-vote behavior are undocumented; counts do not establish your vote.', response};
+        return {type:'comment_vote_readback', post_id:params.id, requester_id:id, vote_state:'unknown', note:'Account-scoped comment response. Vote-state fields and repeat-vote behavior are undocumented; counts do not establish your comment vote.', response};
       }
       const data = await this.#send(action, params, op, controller, epoch);
       this.#remember(action, params, data);
@@ -1016,12 +1016,15 @@ function card(item, forcedPostId) {
   if (typeof item.url === 'string') el.append(node('p', 'Linked URL: ' + item.url, 'body'));
   const actions = node('div', '', 'actions');
   if (validId(postId)) {
-    actions.append(button('Open post', () => run('post', {id:postId})), button('Load comments', () => run('comments', {id:postId})), button('Read account vote data', () => run('commentReadback', {id:postId})));
+    actions.append(button('Open post', () => run('post', {id:postId})), button('Load comments', () => run('comments', {id:postId})), button('Read my comment vote data', () => run('commentReadback', {id:postId})));
     if (!isComment || readableComment) actions.append(button(isComment ? 'Reply' : 'Comment', () => replyTo(postId, isComment ? item.id : '')));
-    if (!isComment) actions.append(button('Upvote', () => run('upvote', {id:postId}, false)), button('Downvote', () => run('downvote', {id:postId}, false)));
+    if (!isComment) {
+      el.append(node('p', 'Your vote on this post is unknown.'));
+      actions.append(button('Upvote', () => run('upvote', {id:postId}, false)), button('Downvote', () => run('downvote', {id:postId}, false)));
+    }
   }
   if (isComment) {
-    el.append(node('p', 'Your comment vote state is unknown. Read account vote data before voting; aggregate counts do not establish your vote.'));
+    el.append(node('p', 'Your comment vote state is unknown. Check your comment vote data before voting.'));
     if (readableComment) actions.append(button('Upvote comment once', () => run('commentUpvote', {id:item.id, ...(validId(postId) ? {post_id:postId} : {})}, false)));
   }
   el.append(actions);

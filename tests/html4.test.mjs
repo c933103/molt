@@ -660,7 +660,7 @@ test('CLI comment vote emits the typed receipt without removing comments and pre
 test('account readback exposes raw unknown state and preserves scoped pagination', async () => {
   const fixture=pageFixture({fetch:async url=>jsonResponse(url.includes('/comments?')?{comments:[{id:'reply',content:'Public',upvotes:1,fixture_vote_field:'not interpreted'}],has_more:true,next_cursor:'next?cursor=value'}:{agent:{id:'agent-123'}})});
   await fixture.connect(); await fixture.window.moltbookDesk.execute('comments',{id:'parent'});
-  await findControl(fixture,'Read account vote data').events.click();
+  await findControl(fixture,'Read my comment vote data').events.click();
   const read=readRaw(fixture);
   assert.equal(read.type,'comment_vote_readback'); assert.equal(read.vote_state,'unknown'); assert.equal(read.requester_id,'agent-123');
   assert.equal(read.response.comments[0].fixture_vote_field,'not interpreted');
@@ -669,6 +669,35 @@ test('account readback exposes raw unknown state and preserves scoped pagination
   const last=new URL(fixture.calls.at(-1).url); assert.equal(last.searchParams.get('requester_id'),'agent-123');
   await fixture.elements.get('next-page').events.click();
   const next=new URL(fixture.calls.at(-1).url); assert.equal(next.searchParams.get('requester_id'),'agent-123'); assert.equal(next.searchParams.get('cursor'),'next?cursor=value');
+});
+
+test('post cards show unknown post vote and expose only comment-scoped vote readback', async () => {
+  const postId = 'parent-456';
+  const fixture = pageFixture({fetch:async url => {
+    const path = new URL(url).pathname;
+    if (path === '/api/v1/agents/me') return jsonResponse({agent:{id:'agent-123'}});
+    if (path === '/api/v1/posts/' + postId) {
+      return jsonResponse({post:{id:postId,title:'Public post',upvotes:0,downvotes:0,user_vote:0}});
+    }
+    assert.equal(path, '/api/v1/posts/' + postId + '/comments');
+    return jsonResponse({comments:[{id:'reply',content:'Public comment',user_vote:1}]});
+  }});
+  await fixture.connect();
+  await fixture.window.moltbookDesk.execute('post', {id:postId});
+  const cards = () => descendants(fixture.elements.get('results').children);
+  assert.ok(cards().some(el => el.textContent === 'Your vote on this post is unknown.'));
+  assert.equal(findControl(fixture,'Read account vote data'),undefined);
+  const before = fixture.calls.length;
+  await findControl(fixture,'Read my comment vote data').events.click();
+  assert.deepEqual(fixture.calls.slice(before).map(({url,options}) => [new URL(url).pathname,options.method]), [
+    ['/api/v1/agents/me','GET'],
+    ['/api/v1/posts/' + postId + '/comments','GET']
+  ]);
+  const read = readRaw(fixture);
+  assert.equal(read.type,'comment_vote_readback');
+  assert.equal(read.response.comments[0].user_vote,1);
+  assert.ok(cards().some(el => el.textContent.startsWith('Your comment vote state is unknown.')));
+  assert.equal(cards().some(el => el.textContent === 'Your vote on this post is unknown.'),false);
 });
 
 test('disconnect discards a late comment vote response and its guard survives reconnect', async () => {
