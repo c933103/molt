@@ -4,7 +4,7 @@
   <meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="referrer" content="no-referrer">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-jVmw9uhfl6UNifs1h0jBtn/wipISylJxsTN9Zbs5wSE='; style-src 'none'; connect-src https://www.moltbook.com; base-uri 'none'; form-action 'none'; object-src 'none'">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-ZHwTZAyc0117bOxjdoBatMkWXvFwWNtAbSeasecONeA='; style-src 'none'; connect-src https://www.moltbook.com; base-uri 'none'; form-action 'none'; object-src 'none'">
   <title>Moltbook browser desk</title>
 </head>
 <body>
@@ -608,6 +608,7 @@ class MoltbookSession {
   get connected() { return Boolean(this.#key); }
   usesKey(value) { return this.connected && this.#key === value; }
   get busy() { return this.#busy; }
+  postVoteAttempted(id) { return this.#postVotes.has(id); }
   commentVoteAttempted(id) { return this.#commentVotes.has(id) || this.#commentRemovals.has(id) || this.#commentDownvotes.has(id); }
   commentDownvoteAttempted(id) { return this.#commentDownvotes.has(id); }
   commentRemovalAttempted(id) { return this.#commentRemovals.has(id); }
@@ -643,7 +644,7 @@ class MoltbookSession {
     if (action === 'commentUpvote' && this.commentVoteAttempted(params.id)) throw new ClientError('This comment vote was already attempted in this page. Read back the account data before considering any further action; repeat-vote behavior is undocumented.');
     if (action === 'commentDownvote' && this.commentDownvoteAttempted(params.id)) throw new ClientError('Comment downvote was already attempted. No retry or fallback is allowed; read account vote data.');
     if (action === 'commentRemoveUpvote' && this.commentRemovalAttempted(params.id)) throw new ClientError('Removal was already attempted for this comment in this page. No retry or fallback is allowed; read account vote data.');
-    if (['upvote','downvote'].includes(action) && this.#postVotes.has(params.id)) throw new ClientError('A vote was already attempted for this post in this page. Reconcile account data; no repeat or toggle is assumed.');
+    if (['upvote','downvote'].includes(action) && this.postVoteAttempted(params.id)) throw new ClientError('A vote was already attempted for this post in this page. Reconcile account data; no repeat or toggle is assumed.');
     if (action === 'state') return {type:'page_engagement_state', scope:'page_memory_only', authoritative_vote_state:false, tracked_posts:this.#engagement.size, post_vote_attempts:this.#postVotes.size, ...(params.fmt === 'full' ? {posts:[...this.#engagement.values()].map(p => ({...p}))} : {})};
     this.#busy = true;
     const controller = new AbortController(); this.#controller = controller;
@@ -667,7 +668,7 @@ class MoltbookSession {
         const id = identity?.agent?.id;
         if (typeof id !== 'string' || !/^[A-Za-z0-9_-]{1,80}$/.test(id) || id.includes(this.#key)) throw new ClientError('The connected account public ID is unavailable. Its comment vote state remains unknown.');
         const response = await this.#send('comments', params, operation('comments', {...params, requester_id:id}), controller, epoch);
-        return {type:'comment_vote_readback', post_id:params.id, requester_id:id, vote_state:'unknown', note:'Account-scoped response below. Vote-state fields and repeat-vote behavior are undocumented; counts do not establish your vote.', response};
+        return {type:'comment_vote_readback', post_id:params.id, requester_id:id, vote_state:'unknown', note:'Account-scoped comment response. Vote-state fields and repeat-vote behavior are undocumented; counts do not establish your comment vote.', response};
       }
       const data = await this.#send(action, params, op, controller, epoch);
       this.#remember(action, params, data);
@@ -918,6 +919,7 @@ function sync() {
   $('connection').textContent = session.connected ? 'Connected in this browser' : 'Not connected';
   $('disconnect').textContent = session.connected ? 'Disconnect and forget key' : 'Forget saved key';
   document.querySelectorAll('button').forEach(b => { b.disabled = (publicationBusy || connectionBusy || session.busy) && b.id !== 'disconnect'; });
+  document.querySelectorAll('.post-vote-status').forEach(el => { el.textContent = postVoteStatus(postVoteStatusIds.get(el)); });
   $('next-page').disabled = publicationBusy || connectionBusy || session.busy || !next;
   $('more-confirm').disabled = publicationBusy || connectionBusy || session.busy || !preparedAction || !session.connected;
   $('recovery-download').disabled = publicationBusy || connectionBusy || session.busy || !session.connected;
@@ -928,6 +930,11 @@ function sync() {
 }
 function node(tag, text, className = '') { const el = document.createElement(tag); el.textContent = text; if (className) el.className = className; return el; }
 function button(label, handler) { const b = node('button', label); b.type = 'button'; b.addEventListener('click', handler); return b; }
+const postVoteStatusIds = new WeakMap();
+function postVoteStatus(postId) {
+  const unknown = 'Your vote on this post is unknown.';
+  return session.postVoteAttempted(postId) ? unknown + ' This tab has a vote attempt recorded for this post.' : unknown;
+}
 function replyTo(postId, parentId = '') { $('comment-post-id').value = postId; $('parent-id').value = parentId; view('reply'); $('comment-content').focus(); }
 // Bound mounted cards and text independently; local navigation never requests data.
 const CARD_PAGE_SIZE = 20, TEXT_PAGE_SIZE = 4096, BODY_BREAK_LIMIT = 8;
@@ -1016,12 +1023,17 @@ function card(item, forcedPostId) {
   if (typeof item.url === 'string') el.append(node('p', 'Linked URL: ' + item.url, 'body'));
   const actions = node('div', '', 'actions');
   if (validId(postId)) {
-    actions.append(button('Open post', () => run('post', {id:postId})), button('Load comments', () => run('comments', {id:postId})), button('Read account vote data', () => run('commentReadback', {id:postId})));
+    actions.append(button('Open post', () => run('post', {id:postId})), button('Load comments', () => run('comments', {id:postId})), button('Read my comment vote data', () => run('commentReadback', {id:postId})));
     if (!isComment || readableComment) actions.append(button(isComment ? 'Reply' : 'Comment', () => replyTo(postId, isComment ? item.id : '')));
-    if (!isComment) actions.append(button('Upvote', () => run('upvote', {id:postId}, false)), button('Downvote', () => run('downvote', {id:postId}, false)));
+    if (!isComment) {
+      const status = node('p', postVoteStatus(postId), 'post-vote-status');
+      postVoteStatusIds.set(status, postId);
+      el.append(status);
+      actions.append(button('Upvote', () => run('upvote', {id:postId}, false)), button('Downvote', () => run('downvote', {id:postId}, false)));
+    }
   }
   if (isComment) {
-    el.append(node('p', 'Your comment vote state is unknown. Read account vote data before voting; aggregate counts do not establish your vote.'));
+    el.append(node('p', 'Your comment vote state is unknown. Check your comment vote data before voting.'));
     if (readableComment) actions.append(button('Upvote comment once', () => run('commentUpvote', {id:item.id, ...(validId(postId) ? {post_id:postId} : {})}, false)));
   }
   el.append(actions);
