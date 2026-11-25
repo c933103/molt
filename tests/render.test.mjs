@@ -12,7 +12,7 @@ function fixture(source = html) {
   }
   const nodes = new Map();
   const $ = id => { if (!nodes.has(id)) nodes.set(id,new Element('div')); return nodes.get(id); };
-  const context = {$,document:{createElement:tag=>new Element(tag),createTextNode:text=>({textContent:text})},MUTATIONS:new Set(),next:null,run(){throw Error('No requests allowed');},view(){},replyTo(){}};
+  const context = {$,document:{createElement:tag=>new Element(tag),createTextNode:text=>({textContent:text})},MUTATIONS:new Set(),next:null,session:{postVoteAttempted:()=>false},run(){throw Error('No requests allowed');},view(){},replyTo(){}};
   const start=source.indexOf('function node('),end=source.indexOf('function voteTarget(');
   vm.runInNewContext(source.slice(start,end),context);
   return {context,$};

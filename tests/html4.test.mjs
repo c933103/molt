@@ -78,7 +78,11 @@ function pageFixture(options = {}) {
   const document = {
     body:new Element('body'),
     getElementById:id => { assert.ok(elements.has(id),'Missing control: ' + id); return elements.get(id); },
-    querySelectorAll:selector => { assert.equal(selector,'button'); return [...elements.values()].filter(e => e.tagName==='BUTTON'); },
+    querySelectorAll:selector => {
+      if (selector === '.post-vote-status') return descendants(elements.get('results').children).filter(e => e.className === 'post-vote-status');
+      assert.equal(selector,'button');
+      return [...elements.values()].filter(e => e.tagName==='BUTTON');
+    },
     createElement:tag => { assert.ok(['button','p','h3','div','pre','br','a'].includes(tag)); return new Element(tag); },
     createTextNode:text => ({textContent:text})
   };
@@ -501,6 +505,8 @@ test('vote buttons retain the exact sanitized outcome without replacing the post
     assert.equal(receipt.response.echo,'[credential removed]'); assert.equal(receipt.response.secret,'[credential removed]');
     assert.equal(fixture.elements.get('raw-response').textContent.includes(KEY),false);
     assert.deepEqual(fixture.elements.get('results').children,before);
+    assert.equal(walk(before).find(el => el.className === 'post-vote-status').textContent,
+      'Your vote on this post is unknown. This tab has a vote attempt recorded for this post.');
     assert.equal(fixture.elements.get('next-page').disabled,false);
     assert.equal(fixture.calls.length,countBefore+1,'Exactly one vote request, with no automatic retry');
   }
@@ -529,6 +535,9 @@ test('failed and uncertain votes replace the prior receipt honestly and never re
     assert.equal('response' in receipt,false); assert.equal(receipt.error.includes(KEY),false);
     if (failure!=='rejected') assert.match(receipt.error,/before retrying|before repeating/);
     assert.deepEqual(fixture.elements.get('results').children,before);
+    const status = walk(before).find(el => el.className === 'post-vote-status').textContent;
+    assert.match(status,/^Your vote on this post is unknown\./);
+    assert.equal(status.includes('This tab has a vote attempt recorded'),failure!=='rejected');
     assert.equal(fixture.calls.length,calls+1);
   }
 });

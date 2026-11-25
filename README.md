@@ -444,8 +444,9 @@ client leaves the post vote unknown regardless of aggregate totals, a comment's
 `user_vote`, or a successful vote receipt.
 
 Successful or uncertain post vote attempts block another vote on the same post
-in either direction within that page instance. The guard survives reconnect
-within the page. An explicit server rejection permits a later explicit attempt.
+in either direction within that page instance. The card shows whether this tab
+has a vote attempt recorded for the post. The guard survives reconnect within
+the page. An explicit server rejection permits a later explicit attempt.
 A durable ledger could extend duplicate prevention across reloads and tabs in
 the same browser profile by atomically reserving a slot for the connected
 account's public ID and the post ID before dispatch. It would need to keep the
